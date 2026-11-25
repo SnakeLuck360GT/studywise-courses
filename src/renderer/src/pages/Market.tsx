@@ -231,7 +231,7 @@ function WeekRow({ w, onRemoved }: { w: MarketWeek; onRemoved: () => void }) {
   const [busy, setBusy] = useState(false)
   const add = async () => {
     setBusy(true)
-    await addMarketWeek(w.id, undefined, w.mine)
+    await addMarketWeek(w.id)
     setBusy(false)
   }
   const remove = async () => {
@@ -272,16 +272,12 @@ function WeekRow({ w, onRemoved }: { w: MarketWeek; onRemoved: () => void }) {
             <Trash2 className="size-4" /> Take down
           </Button>
         )}
-        {/* Yours too: say you deleted it, or you're on another computer. */}
-        <Button
-          variant={w.mine ? 'outline' : 'primary'}
-          size="sm"
-          loading={busy}
-          onClick={add}
-          title={w.mine ? 'Download your week back into your courses. Publishing it again updates this copy.' : undefined}
-        >
-          <Download className="size-4" /> {w.mine ? 'Add back to my courses' : 'Add to my courses'}
-        </Button>
+        {/* Yours came from your own courses: adding it would only make a second copy. */}
+        {!w.mine && (
+          <Button variant="primary" size="sm" loading={busy} onClick={add}>
+            <Download className="size-4" /> Add to my courses
+          </Button>
+        )}
       </div>
       {open && (
         <div className="flex flex-col gap-3 border-t border-line px-4 py-4">

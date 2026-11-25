@@ -329,31 +329,6 @@ export async function setCourseVisibility(courseId: string, isPrivate: boolean):
   return { removed: 0, failed: [] }
 }
 
-/**
- * You added one of your own published weeks back to your courses (say you'd
- * deleted it, or you're on another computer). It's your work, not someone
- * else's: it can be published automatically again, and publishing it updates
- * the copy that's already on the marketplace instead of adding a second one.
- * Unless the week it was published from is still here: then this is just a
- * copy, and that week stays the one linked to the marketplace. Returns
- * whether it was linked.
- */
-export async function claimOwnWeek(weekId: string, remoteWeekId: string): Promise<boolean> {
-  // Only a week that really is yours on the site.
-  if (!(await mine()).some((w) => w.id === remoteWeekId)) return false
-  const d = getDb()
-  const on = published()
-  const stillHere = Object.entries(on).some(([local, remote]) => remote === remoteWeekId && local !== weekId && d.prepare('SELECT 1 FROM weeks WHERE id = ?').get(local))
-  if (stillHere) return false
-  // Links from weeks that are gone go; this week takes over.
-  for (const [local, remote] of Object.entries(on)) if (remote === remoteWeekId && local !== weekId) setPublishedHash(local, null)
-  setSetting(PUBLISHED_SETTING, { ...Object.fromEntries(Object.entries(on).filter(([, remote]) => remote !== remoteWeekId)), [weekId]: remoteWeekId })
-  // Just downloaded, so it's the same as what's on the marketplace.
-  setPublishedHash(weekId, weekContentHash(weekId))
-  setSetting(IMPORTED_WEEKS_SETTING, getSetting<string[]>(IMPORTED_WEEKS_SETTING, []).filter((w) => w !== weekId))
-  return true
-}
-
 /** Download a published week to a temporary .studyweek file, to import like a shared week. */
 export async function download(remoteWeekId: string): Promise<string> {
   const res = await send(`/api/weeks/${encodeURIComponent(remoteWeekId)}/file`, { timeoutMs: 10 * 60_000 })
