@@ -7,6 +7,8 @@ import { importSharedWeek, dropOnWeek } from './lib/weekShare'
 /** Jobs already announced as done, and those whose plan usage was shown. */
 const announced = new Set<string>()
 const usageShown = new Set<string>()
+/** Marketplace download jobs: how many weeks each had added when last seen. */
+const marketAdded = new Map<string, number>()
 import { useStore, toast, type Route } from './lib/store'
 import { api, onEvent, errorText } from './lib/api'
 import { startCommandDispatch, useCommands, runCommand } from './lib/commands'
@@ -155,6 +157,15 @@ export function App() {
           if (j.kind === 'course_outline' || j.kind === 'course_topic') {
             if (j.status !== 'done' || first) st.bump()
             if (first) toast(j.kind === 'course_outline' ? `${j.title.replace(/^Plan: /, '')}: topics planned` : `${j.title.replace(/^Topic: /, '')} is ready`, 'good')
+          }
+          // Downloading marketplace weeks: show each as it goes in, and say when it's finished.
+          if (typeof j.meta?.marketAdded === 'number') {
+            if (marketAdded.get(j.id) !== j.meta.marketAdded) st.bump()
+            marketAdded.set(j.id, j.meta.marketAdded)
+            if (first) {
+              const r = j.result as { added: number; failed: string[] } | null
+              if (r) toast(`Added ${r.added} week${r.added === 1 ? '' : 's'} from the marketplace${r.failed.length ? `; ${r.failed.length} didn’t download` : ''}`, r.failed.length ? 'info' : 'good')
+            }
           }
           const used = j.status === 'done' && !usageShown.has(j.id) ? planUsageText(j.planUsage) : null
           if (used) {

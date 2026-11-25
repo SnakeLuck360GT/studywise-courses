@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ChevronDown, ChevronRight, Download, FileText, Search, Store, Trash2, Upload, Users } from 'lucide-react'
-import { authorsText, modelLabel, weeksByWeek, type MarketCourse, type MarketCourseFull, type MarketSort, type MarketWeek, type WeekGroup } from '@shared/market'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, FileText, ListPlus, RefreshCw, Search, Store, Trash2, Upload, Users } from 'lucide-react'
+import { authorsText, modelLabel, weeksByWeek, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketSort, type MarketWeek, type WeekGroup } from '@shared/market'
 import { NOTE_LEVEL_INFO, isNoteLevel } from '@shared/course'
 import { api, errorText } from '../lib/api'
-import { addMarketWeek, modelsText, publishAllToMarket, weekSummary } from '../lib/market'
+import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, marketCopies, modelsText, publishAllToMarket, weekSummary } from '../lib/market'
 import { confirmDialog } from '../lib/dialogs'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
 import { MarketSetup } from '../components/MarketSetup'
-import { Button, Card, Empty, Input, Pill, Segmented, Spinner, cx } from '../components/ui'
+import { Button, Card, Empty, Input, Menu, MenuItem, Pill, Segmented, Spinner, cx } from '../components/ui'
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 const mb = (bytes: number) => `${(bytes / 1e6).toFixed(bytes < 1e7 ? 1 : 0)} MB`
@@ -119,9 +119,15 @@ function MarketList() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {courses?.map((c) => (
               <Card key={c.id} onClick={() => go({ name: 'market', courseId: c.id })} className="flex flex-col gap-2.5">
-                <div>
-                  <h3 className="text-[1.05rem] leading-snug font-semibold">{c.name}</h3>
-                  {c.module && c.module !== c.name && <div className="text-[0.85rem] text-muted">{c.module}</div>}
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-[1.05rem] leading-snug font-semibold">{c.name}</h3>
+                    {c.module && c.module !== c.name && <div className="text-[0.85rem] text-muted">{c.module}</div>}
+                  </div>
+                  {/* Its own clicks don't open the course. */}
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DownloadMenu course={c} />
+                  </div>
                 </div>
                 <div className="flex items-center gap-1.5 text-[0.85rem] text-muted">
                   <Users className="size-3.5" /> {authorsText(c.authors)}
@@ -152,6 +158,7 @@ function MarketCoursePage({ id }: { id: string }) {
   const go = useStore((s) => s.go)
   const [c, setC] = useState<MarketCourseFull | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const copies = useCopies()
   const load = () =>
     api.market
       .course({ id })
@@ -174,7 +181,7 @@ function MarketCoursePage({ id }: { id: string }) {
   if (!c) return null
   return (
     <Shell>
-      <PageTitle eyebrow={back} title={c.name}>
+      <PageTitle eyebrow={back} title={c.name} actions={<DownloadButtons onDownload={(mode) => void downloadMarketCourse(c, mode)} />}>
         <span>
           Weeks by {authorsText(c.authors)}
           {c.module && c.module !== c.name ? ` · ${c.module}` : ''}
@@ -183,7 +190,13 @@ function MarketCoursePage({ id }: { id: string }) {
         <div className="mt-1.5 text-[0.88rem]">Written with {modelsText(c.models)}</div>
       </PageTitle>
       <div className="flex flex-col gap-3">
-        {weeksByWeek(c.weeks).map((g) => (g.versions.length === 1 ? <WeekRow key={g.versions[0].id} w={g.versions[0]} onRemoved={load} /> : <WeekGroupRow key={g.key} g={g} onRemoved={load} />))}
+        {weeksByWeek(c.weeks).map((g) =>
+          g.versions.length === 1 ? (
+            <WeekRow key={g.versions[0].id} w={g.versions[0]} copy={copies.map[g.versions[0].id]} onAdded={copies.reload} onRemoved={load} />
+          ) : (
+            <WeekGroupRow key={g.key} g={g} copies={copies.map} onAdded={copies.reload} onRemoved={load} />
+          )
+        )}
       </div>
     </Shell>
   )
@@ -193,7 +206,7 @@ function MarketCoursePage({ id }: { id: string }) {
  * Several people have generated the same week: one row for the week, with how
  * many people made it. Open it to see every version, each with its own Add.
  */
-function WeekGroupRow({ g, onRemoved }: { g: WeekGroup<MarketWeek>; onRemoved: () => void }) {
+function WeekGroupRow({ g, copies, onAdded, onRemoved }: { g: WeekGroup<MarketWeek>; copies: Record<string, MarketCopy>; onAdded: () => void; onRemoved: () => void }) {
   const [open, setOpen] = useState(false)
   const downloads = g.versions.reduce((n, v) => n + v.downloads, 0)
   const mine = g.versions.some((v) => v.mine)
@@ -218,7 +231,7 @@ function WeekGroupRow({ g, onRemoved }: { g: WeekGroup<MarketWeek>; onRemoved: (
       {open && (
         <div className="flex flex-col gap-2 border-t border-line p-3">
           {g.versions.map((v) => (
-            <WeekRow key={v.id} w={v} onRemoved={onRemoved} />
+            <WeekRow key={v.id} w={v} copy={copies[v.id]} onAdded={onAdded} onRemoved={onRemoved} />
           ))}
         </div>
       )}
@@ -226,14 +239,67 @@ function WeekGroupRow({ g, onRemoved }: { g: WeekGroup<MarketWeek>; onRemoved: (
   )
 }
 
-function WeekRow({ w, onRemoved }: { w: MarketWeek; onRemoved: () => void }) {
+/** Marketplace weeks you already have here, reloaded after you add one. */
+function useCopies(): { map: Record<string, MarketCopy>; reload: () => void } {
+  const version = useStore((s) => s.version)
+  const [map, setMap] = useState<Record<string, MarketCopy>>({})
+  const reload = () => void marketCopies().then(setMap)
+  // Again whenever your library changes (a download job adding weeks, say).
+  useEffect(reload, [version])
+  return { map, reload }
+}
+
+type Mode = 'all' | 'missing'
+
+/** Download the weeks you don't have yet, or every week. */
+function DownloadButtons({ onDownload, what = 'weeks' }: { onDownload: (mode: Mode) => void; what?: string }) {
+  return (
+    <>
+      <Button onClick={() => onDownload('all')} title={`Download every one of the ${what}, except ones you’ve already added`}>
+        <ListPlus className="size-4" /> Download all {what}
+      </Button>
+      <Button variant="primary" onClick={() => onDownload('missing')} title={`Download only the ${what} you don’t have yet`}>
+        <Download className="size-4" /> Download missing {what}
+      </Button>
+    </>
+  )
+}
+
+/** On a course's card in the list: download it without opening it. */
+function DownloadMenu({ course }: { course: MarketCourse }) {
+  return (
+    <Menu
+      trigger={(open) => (
+        <Button variant="ghost" size="icon" onClick={open} aria-label={`Download ${course.name}`} title="Download this course">
+          <Download className="size-4" />
+        </Button>
+      )}
+    >
+      {(close) => (
+        <>
+          <MenuItem icon={<Download className="size-4" />} onClick={() => (close(), void downloadMarketCourse(course, 'missing'))}>
+            Download missing weeks…
+          </MenuItem>
+          <MenuItem icon={<ListPlus className="size-4" />} onClick={() => (close(), void downloadMarketCourse(course, 'all'))}>
+            Download all weeks…
+          </MenuItem>
+        </>
+      )}
+    </Menu>
+  )
+}
+
+function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: MarketCopy; onAdded: () => void; onRemoved: () => void }) {
+  const go = useStore((s) => s.go)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const add = async () => {
     setBusy(true)
-    await addMarketWeek(w.id)
+    if (await addMarketWeek(w)) onAdded()
     setBusy(false)
   }
+  // Republished since you added it: your copy is the older version.
+  const newer = copy?.how === 'added' && !!copy.at && new Date(w.updatedAt) > new Date(copy.at)
   const remove = async () => {
     if (!(await confirmDialog(`Take ${w.label} off the marketplace?`, 'People who already added it keep their copy. Your own course isn’t changed.', { confirmText: 'Take it down', danger: true }))) return
     try {
@@ -267,17 +333,26 @@ function WeekRow({ w, onRemoved }: { w: MarketWeek; onRemoved: () => void }) {
             </div>
           </div>
         </button>
+        {copy && (
+          <button
+            className="shrink-0"
+            title={`${copy.how === 'published' ? 'You published this from' : 'You added this to'} ${copyText(copy)}. Open it.`}
+            onClick={() => go({ name: 'week', courseId: copy.courseId, weekId: copy.weekId })}
+          >
+            <Pill tone={newer ? 'warn' : 'good'}>
+              {newer ? <RefreshCw className="size-3" /> : <Check className="size-3" />} {newer ? 'Updated since you added it' : `In ${copy.course}`}
+            </Pill>
+          </button>
+        )}
         {w.mine && (
           <Button variant="ghost" size="sm" onClick={remove}>
             <Trash2 className="size-4" /> Take down
           </Button>
         )}
-        {/* Yours came from your own courses: adding it would only make a second copy. */}
-        {!w.mine && (
-          <Button variant="primary" size="sm" loading={busy} onClick={add}>
-            <Download className="size-4" /> Add to my courses
-          </Button>
-        )}
+        {/* Your own too: on another device (or with another key) it's how you get it there. */}
+        <Button variant={copy && !newer ? 'outline' : 'primary'} size="sm" loading={busy} onClick={add}>
+          <Download className="size-4" /> {copy ? 'Add again' : 'Add to my courses'}
+        </Button>
       </div>
       {open && (
         <div className="flex flex-col gap-3 border-t border-line px-4 py-4">
@@ -319,6 +394,7 @@ function MyWeeks() {
   const go = useStore((s) => s.go)
   const [weeks, setWeeks] = useState<(MarketWeek & { courseName: string })[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const copies = useCopies()
   const load = () =>
     api.market
       .mine()
@@ -338,12 +414,16 @@ function MyWeeks() {
     )
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <span className="mr-auto text-[0.88rem] text-muted">On another device? Download what you’ve published into your courses here.</span>
+        <DownloadButtons what="my weeks" onDownload={(mode) => void downloadMyWeeks(mode)} />
+      </div>
       {weeks.map((w) => (
         <div key={w.id}>
           <button className="mb-1 text-[0.85rem] font-semibold text-muted hover:text-ink" onClick={() => go({ name: 'market', courseId: w.courseId })}>
             {w.courseName}
           </button>
-          <WeekRow w={w} onRemoved={load} />
+          <WeekRow w={w} copy={copies.map[w.id]} onAdded={copies.reload} onRemoved={load} />
         </div>
       ))}
     </div>

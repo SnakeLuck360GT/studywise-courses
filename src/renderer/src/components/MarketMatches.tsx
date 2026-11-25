@@ -1,14 +1,15 @@
+import { useEffect, useState } from 'react'
 import { create } from 'zustand'
-import { Download, Sparkles, Users } from 'lucide-react'
-import type { MarketMatch } from '@shared/market'
+import { Check, Download, Sparkles, Users } from 'lucide-react'
+import type { MarketCopy, MarketMatch } from '@shared/market'
 import { modelLabel } from '@shared/market'
-import { matchPercent, modelsText, weekSummary } from '../lib/market'
+import { copyText, marketCopies, matchPercent, modelsText, weekSummary } from '../lib/market'
 import { Button, Modal, Pill } from './ui'
 
 // Before planning a week: someone has already published a week made from the
 // same slides. Use theirs (no tokens), plan it yourself anyway, or stop.
 
-type Answer = { use: string } | 'plan' | null
+type Answer = { use: string; mine: boolean; courseId: string } | 'plan' | null
 interface Ask {
   label: string
   matches: MarketMatch[]
@@ -26,6 +27,11 @@ export function askAboutMatches(label: string, matches: MarketMatch[], opts: { p
 
 export function MarketMatchesHost() {
   const ask = useAsk((s) => s.ask)
+  // Which of them you already have here (added before, or published from here).
+  const [copies, setCopies] = useState<Record<string, MarketCopy>>({})
+  useEffect(() => {
+    if (ask) void marketCopies().then(setCopies)
+  }, [ask])
   const done = (a: Answer) => {
     ask?.resolve(a)
     useAsk.setState({ ask: null })
@@ -72,6 +78,11 @@ export function MarketMatchesHost() {
                   {m.sameFiles ? `${m.sameFiles} same file${m.sameFiles === 1 ? '' : 's'}` : m.score >= 0.35 ? `${matchPercent(m)} the same` : 'Same course and week'}
                 </Pill>
               </div>
+              {copies[m.week.id] && (
+                <div className="flex items-center gap-1.5 text-[0.85rem] text-good">
+                  <Check className="size-3.5" /> You already have it: {copyText(copies[m.week.id])}
+                </div>
+              )}
               <div className="text-[0.88rem] text-muted">{weekSummary(m.week)}</div>
               <div className="text-[0.85rem]">
                 <span className="text-muted">Written with </span>
@@ -80,7 +91,7 @@ export function MarketMatchesHost() {
               </div>
               <div className="text-[0.85rem] text-muted">{m.week.topics.map((t) => t.title).join(' · ')}</div>
               <div>
-                <Button variant="primary" size="sm" onClick={() => done({ use: m.week.id })}>
+                <Button variant="primary" size="sm" onClick={() => done({ use: m.week.id, mine: m.week.mine, courseId: m.week.courseId })}>
                   <Download className="size-4" /> Use this week
                 </Button>
               </div>

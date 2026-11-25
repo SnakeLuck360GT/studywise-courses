@@ -3,16 +3,16 @@
 // their own tokens. You give the app the site's address and an API key made
 // on the site's account page; the key is kept encrypted, like the Ollama key.
 
-import { mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getSetting, setSetting } from '../db/repo'
 import { getSecret, setSecret } from '../secrets'
 import { getDb } from '../db'
-import { setCoursePrivate, setWeekPrivate, weekFingerprint } from './course'
-import { weekContentHash, weekZip } from './weekShare'
+import { getCourse as localCourse, setCoursePrivate, setWeekPrivate, weekFingerprint } from './course'
+import { importWeek, weekContentHash, weekZip } from './weekShare'
 import { startJob, type JobContext } from '../jobs'
-import { AUTO_PUBLISH_SETTING, IMPORTED_WEEKS_SETTING, type MarketCourse, type MarketCourseFull, type MarketMatch, type MarketSort, type MarketStatus, type MarketWeek, type PublishableWeek } from '@shared/market'
+import { AUTO_PUBLISH_SETTING, IMPORTED_WEEKS_SETTING, planAdd, type AddMode, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketMatch, type MarketSort, type MarketStatus, type MarketWeek, type PublishableWeek } from '@shared/market'
 
 const URL_SETTING = 'market.url'
 const KEY_SETTING = 'secret.marketKey' as const
@@ -20,6 +20,10 @@ const KEY_SETTING = 'secret.marketKey' as const
 const PUBLISHED_SETTING = 'market.published'
 /** What each of your weeks had in it when it was last published (weekContentHash): {localWeekId: hash}. */
 const PUBLISHED_HASH_SETTING = 'market.publishedHash'
+/** Marketplace weeks added to this library: {remoteWeekId: {weekId, at}}. */
+const ADDED_SETTING = 'market.added'
+/** Which of your courses each marketplace course's weeks go into: {marketCourseId: courseId}. */
+const LINKS_SETTING = 'market.courseLinks'
 const TIMEOUT_MS = 30_000
 /** The "already made" check runs before planning, so it mustn't hold planning up for long. */
 const SIMILAR_TIMEOUT_MS = 8_000
@@ -178,6 +182,7 @@ export async function publish(weekId: string): Promise<{ week: MarketWeek; repla
   }
   setSetting(PUBLISHED_SETTING, { ...published(), [weekId]: r.week.id })
   setPublishedHash(weekId, hash)
+  linkCourse(r.week.courseId, weekId)
   return { week: r.week, replaced }
 }
 
@@ -339,6 +344,153 @@ export async function download(remoteWeekId: string): Promise<string> {
   return file
 }
 
+const added = () => getSetting<Record<string, { weekId: string; at: string }>>(ADDED_SETTING, {})
+
+/**
+ * A marketplace week went into one of your weeks. Your own (published from
+ * another device or with another key) is linked to what you published: it's
+ * yours, so publishing it from here updates the same marketplace week rather
+ * than adding a second, and it can be published automatically.
+ */
+export function recordAdded(remoteWeekId: string, weekId: string, mine: boolean, marketCourseId?: string): void {
+  setSetting(ADDED_SETTING, { ...added(), [remoteWeekId]: { weekId, at: new Date().toISOString() } })
+  if (marketCourseId) linkCourse(marketCourseId, weekId)
+  if (!mine) return
+  setSetting(PUBLISHED_SETTING, { ...published(), [weekId]: remoteWeekId })
+  setSetting(IMPORTED_WEEKS_SETTING, getSetting<string[]>(IMPORTED_WEEKS_SETTING, []).filter((id) => id !== weekId))
+}
+
+const links = () => getSetting<Record<string, string>>(LINKS_SETTING, {})
+
+/** Remember that this marketplace course's weeks go into the course this week of yours is in. */
+function linkCourse(marketCourseId: string, weekId: string): void {
+  const w = getDb().prepare('SELECT course_id FROM weeks WHERE id = ?').get(weekId) as { course_id: string } | undefined
+  if (w && links()[marketCourseId] !== w.course_id) setSetting(LINKS_SETTING, { ...links(), [marketCourseId]: w.course_id })
+}
+
+/**
+ * Which of your courses each marketplace course goes into, so adding more of
+ * it doesn't ask again: the course you last added (or published) its weeks
+ * from, else the course holding a week of it you already have (from before
+ * this was remembered). Courses you've since deleted don't count.
+ */
+export async function linkedCourses(marketCourseIds: string[]): Promise<Record<string, string>> {
+  const exists = getDb().prepare('SELECT 1 FROM courses WHERE id = ?')
+  const known = links()
+  const out: Record<string, string> = {}
+  let have: Record<string, MarketCopy> | null = null
+  for (const mc of marketCourseIds) {
+    if (known[mc] && exists.get(known[mc])) {
+      out[mc] = known[mc]
+      continue
+    }
+    have ??= copies()
+    if (!Object.keys(have).length) continue
+    const remote = await getCourse(mc).catch(() => null)
+    const copy = remote?.weeks.map((w) => have![w.id]).find(Boolean)
+    if (copy) out[mc] = copy.courseId
+  }
+  return out
+}
+
+/**
+ * Marketplace weeks you already have in this library, by marketplace week id:
+ * added here, or published from here. Weeks you've since deleted don't count.
+ */
+export function copies(): Record<string, MarketCopy> {
+  const d = getDb()
+  const where = d.prepare('SELECT w.id weekId, w.label week, c.id courseId, c.name course FROM weeks w JOIN courses c ON c.id = w.course_id WHERE w.id = ?')
+  const look = (weekId: string) => where.get(weekId) as { weekId: string; week: string; courseId: string; course: string } | undefined
+  const out: Record<string, MarketCopy> = {}
+  for (const [weekId, remote] of Object.entries(published())) {
+    const w = look(weekId)
+    if (w) out[remote] = { ...w, how: 'published', at: null }
+  }
+  for (const [remote, a] of Object.entries(added())) {
+    const w = look(a.weekId)
+    // The latest you added wins over one you published (your own, added on another device).
+    if (w) out[remote] = { ...w, how: 'added', at: a.at }
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Downloading a whole course, or the weeks of it you don't have
+
+/** A marketplace course, and which of your courses its weeks go into (null: a new one). */
+export interface AddTarget {
+  marketCourseId: string
+  courseId: string | null
+}
+
+/** What downloading a course would add, for the confirm (and then the job). */
+export interface AddPlan extends AddTarget {
+  name: string
+  /** Your course's name (null for a new course). */
+  target: string | null
+  items: { id: string; label: string; author: string; mine: boolean; into: { id: string; label: string } | null }[]
+  /** Weeks left out because you have them already. */
+  skipped: number
+}
+
+/** Which weeks of each course to add, and where (see planAdd). With `onlyMine`, only weeks you published. */
+export async function planAdds(targets: AddTarget[], mode: AddMode, onlyMine = false): Promise<AddPlan[]> {
+  const have = copies()
+  const out: AddPlan[] = []
+  for (const t of targets) {
+    const remote = await getCourse(t.marketCourseId)
+    const local = t.courseId ? localCourse(t.courseId) : null
+    const weeks = onlyMine ? remote.weeks.filter((w) => w.mine) : remote.weeks
+    const p = planAdd(weeks, local?.weeks.map((w) => ({ id: w.id, label: w.label, topics: w.topics.length })) ?? [], have, t.courseId, mode)
+    out.push({
+      ...t,
+      name: remote.name,
+      target: local?.name ?? null,
+      items: p.items.map((i) => ({ id: i.week.id, label: i.week.label, author: i.week.author, mine: i.week.mine, into: i.into })),
+      skipped: p.skipped
+    })
+  }
+  return out
+}
+
+/**
+ * Download and add the planned weeks one after another (a job). One failing
+ * doesn't stop the rest. A new course is made by the first week that goes in.
+ */
+export async function addPlanned(plans: AddPlan[], ctx: JobContext): Promise<{ added: number; failed: string[] }> {
+  const total = plans.reduce((n, p) => n + p.items.length, 0)
+  const failed: string[] = []
+  let added = 0
+  let done = 0
+  for (const p of plans) {
+    let courseId = p.courseId
+    for (const item of p.items) {
+      if (ctx.signal.aborted) throw new Error('Cancelled')
+      const name = `${p.name} · ${item.label}`
+      ctx.progress(`Downloading ${done + 1} of ${total}: ${name}`)
+      ctx.live?.({ stage: `Downloading ${name}…`, percent: done / total })
+      done++
+      let file: string | null = null
+      try {
+        file = await download(item.id)
+        const r = await importWeek(file, item.into ? { weekId: item.into.id } : courseId ? { courseId } : { newCourse: true })
+        courseId = r.courseId
+        recordAdded(item.id, r.weekId, item.mine, p.marketCourseId)
+        added++
+        // Tells the window to refresh what it shows.
+        ctx.meta({ marketAdded: added, courseId })
+      } catch (e) {
+        failed.push(`${name}: ${(e as Error).message}`)
+      } finally {
+        if (file) rmSync(file, { force: true })
+      }
+    }
+  }
+  if (!added && failed.length) throw new Error(failed[0])
+  ctx.progress(`Added ${added} week${added === 1 ? '' : 's'}${failed.length ? `; ${failed.length} didn’t: ${failed.join('; ')}` : ''}`)
+  return { added, failed }
+}
+
 /**
  * Published weeks someone else already made of this week, before you spend
  * tokens on it: made from (nearly) the same material, or the same week number
@@ -351,10 +503,11 @@ export async function similar(weekId: string): Promise<MarketMatch[]> {
     const fp = await weekFingerprint(weekId)
     const w = getDb().prepare('SELECT w.label, c.name, c.module FROM weeks w JOIN courses c ON c.id = w.course_id WHERE w.id = ?').get(weekId) as { label: string; name: string; module: string } | undefined
     if (!w) return []
-    const own = published()[weekId]
+    const fromHere = new Set(Object.values(published()))
     const r = await request<{ matches: MarketMatch[] }>('/api/similar', { ...json({ ...fp, course: w.name, module: w.module, week: w.label }), timeoutMs: SIMILAR_TIMEOUT_MS })
-    // Only other people's weeks: your own published ones came from your courses already.
-    return r.matches.filter((m) => m.week.id !== own && !m.week.mine)
+    // Not weeks published from this library (you have them already), but your
+    // own from another device (or another API key) are offered like anyone's.
+    return r.matches.filter((m) => !fromHere.has(m.week.id))
   } catch {
     return []
   }

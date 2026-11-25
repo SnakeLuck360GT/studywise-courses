@@ -23,6 +23,8 @@ interface Ask {
   multi?: boolean
   written?: NoteLevel[]
   cancelText?: string
+  /** A third button (for "confirm"), between Cancel and the main one. */
+  altText?: string
   placeholder?: string
   resolve: (v: string | null) => void
 }
@@ -34,6 +36,10 @@ export function askText(title: string, opts: { label?: string; initial?: string;
 }
 export function confirmDialog(title: string, message?: string, opts: { confirmText?: string; danger?: boolean } = {}): Promise<boolean> {
   return new Promise((resolve) => useDialog.getState().set({ title, kind: 'confirm', message, ...opts, resolve: (v) => resolve(v !== null) }))
+}
+/** Confirm with a second way on (like "Somewhere else…"): 'ok', 'alt', or null when cancelled. */
+export function confirmOrElse(title: string, message: string, opts: { confirmText: string; altText: string }): Promise<'ok' | 'alt' | null> {
+  return new Promise((resolve) => useDialog.getState().set({ title, kind: 'confirm', message, ...opts, resolve: (v) => resolve(v === 'alt' ? 'alt' : v === null ? null : 'ok') }))
 }
 export function chooseDialog(title: string, options: { value: string; label: string }[], opts: { label?: string; confirmText?: string; initial?: string; message?: string } = {}): Promise<string | null> {
   return new Promise((resolve) => useDialog.getState().set({ title, kind: 'choose', options, ...opts, resolve }))
@@ -151,6 +157,7 @@ export function DialogHost() {
           <Button variant="ghost" onClick={() => close(null)}>
             {ask.cancelText ?? 'Cancel'}
           </Button>
+          {ask.altText && <Button onClick={() => close('alt')}>{ask.altText}</Button>}
           <Button variant={ask.danger ? 'danger' : 'primary'} onClick={ok} disabled={ask.kind === 'write' && !levels.length}>
             {ask.confirmText ?? 'OK'}
             {many ? ` · ${levels.length} levels` : ''}

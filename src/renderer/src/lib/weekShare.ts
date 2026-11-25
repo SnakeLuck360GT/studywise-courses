@@ -1,38 +1,56 @@
 import { api, errorText } from './api'
-import { chooseDialog, confirmDialog } from './dialogs'
+import { chooseDialog, confirmDialog, confirmOrElse } from './dialogs'
 import { offerPlan } from './courseFlows'
 import { toast, useStore } from './store'
 
 /**
  * Add a week someone shared (a .studyweek file): say what's in it, ask where it
  * goes (one of your courses, or a new one), import it and open that course.
- * With `courseId` it goes straight into that course after a confirm.
+ * With `courseId` it goes straight into that course after a confirm; with
+ * `remembered` too, that's where this course's weeks went before, and the
+ * confirm offers somewhere else. With `market` it's that marketplace week,
+ * remembered so adding it again asks first (and its course remembered, so
+ * the next week of it goes to the same place). True when it was added.
  */
-export async function importSharedWeek(opts: { file?: string; courseId?: string } = {}): Promise<void> {
+export async function importSharedWeek(
+  opts: { file?: string; courseId?: string; remembered?: boolean; market?: { id: string; mine: boolean; courseId?: string } } = {}
+): Promise<boolean> {
   try {
     const p = await api.courses.previewWeek(opts.file ? { file: opts.file } : undefined)
-    if (!p) return
+    if (!p) return false
     const what = `${p.written} of ${p.topics} topic${p.topics === 1 ? '' : 's'} written, ${p.cards} recall card${p.cards === 1 ? '' : 's'}, ${p.files.length} file${p.files.length === 1 ? '' : 's'}. Nothing is generated, so it costs no tokens.`
     let courseId: string | null = opts.courseId ?? null
-    if (opts.courseId) {
-      if (!(await confirmDialog(`Add “${p.week}” to this course?`, `From ${p.course}: ${what}`, { confirmText: 'Add week' }))) return
-    } else {
-      const courses = await api.courses.list()
+    const courses = await api.courses.list()
+    const remembered = opts.remembered ? courses.find((c) => c.id === opts.courseId) : undefined
+    let ask = !opts.courseId || (!!opts.remembered && !remembered)
+    if (remembered) {
+      const a = await confirmOrElse(`Add “${p.week}” to ${remembered.name}?`, `${what} ${remembered.name} is where you put this course’s weeks before.`, {
+        confirmText: 'Add week',
+        altText: 'Somewhere else…'
+      })
+      if (a === null) return false
+      ask = a === 'alt'
+    } else if (!ask) {
+      if (!(await confirmDialog(`Add “${p.week}” to this course?`, `From ${p.course}: ${what}`, { confirmText: 'Add week' }))) return false
+    }
+    if (ask) {
       const same = courses.find((c) => c.name.trim().toLowerCase() === p.course.trim().toLowerCase())
       const choice = await chooseDialog(
         `Add “${p.week}” from ${p.course}`,
         [{ value: '', label: `A new course called “${p.course}”` }, ...courses.map((c) => ({ value: c.id, label: `Add to ${c.name}` }))],
         { message: what, confirmText: 'Add week', initial: same?.id ?? '' }
       )
-      if (choice === null) return
+      if (choice === null) return false
       courseId = choice || null
     }
-    const r = await api.courses.importWeek({ file: p.file, courseId })
+    const r = await api.courses.importWeek({ file: p.file, courseId, market: opts.market })
     toast(`Added ${p.week}: ${r.topics} topic${r.topics === 1 ? '' : 's'} and ${r.cards} card${r.cards === 1 ? '' : 's'}`, 'good')
     useStore.getState().bump()
     useStore.getState().go({ name: 'course', id: r.courseId })
+    return true
   } catch (e) {
     toast(errorText(e), 'bad')
+    return false
   }
 }
 

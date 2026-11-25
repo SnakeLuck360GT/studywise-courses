@@ -249,6 +249,35 @@ export interface WeekFull extends Week {
   card_count: number
 }
 
+/** The week's number from its label: "Week 3" → 3, "W10 · Graphs" → 10, "Lecture 4" → 4; null when it has none ("Reading week"). */
+export function weekNumber(label: string): number | null {
+  const m = label.match(/\b(?:week|wk|w)\s*(\d+)/i) ?? label.match(/\d+/)
+  return m ? Number(m[1] ?? m[0]) : null
+}
+
+/** Week 1 first, or the latest week first. */
+export type WeekOrder = 'asc' | 'desc'
+
+/**
+ * Weeks in week-number order (from their labels), whatever order they were
+ * added in, so a week downloaded later (week 2 after week 5) sits in its
+ * place. A week without a number stays just after the week it was added
+ * after; weeks with the same number keep the order they were added in.
+ */
+export function sortWeeks<T extends { label: string; position: number }>(weeks: T[], order: WeekOrder = 'asc'): T[] {
+  let last = 0
+  const keyed = [...weeks]
+    .sort((a, b) => a.position - b.position)
+    .map((w, i) => {
+      const n = weekNumber(w.label)
+      if (n !== null) last = n
+      return { w, i, n: n ?? last, numbered: n !== null }
+    })
+  keyed.sort((a, b) => a.n - b.n || Number(b.numbered) - Number(a.numbered) || a.i - b.i)
+  const sorted = keyed.map((k) => k.w)
+  return order === 'desc' ? sorted.reverse() : sorted
+}
+
 export interface Course {
   id: string
   name: string

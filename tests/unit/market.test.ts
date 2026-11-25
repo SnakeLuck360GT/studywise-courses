@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import JSZip from 'jszip'
 import { signature, similarity, words, SIGNATURE_SIZE } from '@shared/fingerprint'
-import { authorsText, modelLabel, weekNumber, weeksByWeek } from '@shared/market'
+import { authorsText, modelLabel, planAdd, sameCourse, weekNumber, weeksByWeek, type MarketWeek } from '@shared/market'
 
 const lecture = (topic: string, n: number) =>
   Array.from({ length: n }, (_, i) => `In ${topic} the ${i}th idea builds on the one before it, and the lecture works an example through step by step.`).join(' ')
@@ -360,5 +360,248 @@ describe('public and private', () => {
     const w = svc.addWeek(course.id, 'Week 1', { private: true })
     const { json } = await share.weekZip(w.id)
     expect('private' in JSON.parse(JSON.stringify(json.week))).toBe(false)
+  })
+})
+
+describe('weeks added from the marketplace', () => {
+  it('lists a course’s weeks by week number, whatever order they were added in', async () => {
+    const { sortWeeks, weekNumber } = await import('@shared/course')
+    expect(weekNumber('Week 3')).toBe(3)
+    expect(weekNumber('W10 · Graphs')).toBe(10)
+    expect(weekNumber('Lecture 4')).toBe(4)
+    expect(weekNumber('Week 2 (2)')).toBe(2)
+    expect(weekNumber('Reading week')).toBeNull()
+    const ws = ['Week 1', 'Week 5', 'Reading week', 'Week 2', 'Week 10', 'Week 2 (2)'].map((label, position) => ({ label, position }))
+    expect(sortWeeks(ws).map((w) => w.label)).toEqual(['Week 1', 'Week 2', 'Week 2 (2)', 'Week 5', 'Reading week', 'Week 10'])
+    expect(sortWeeks(ws, 'desc').map((w) => w.label)).toEqual(['Week 10', 'Reading week', 'Week 5', 'Week 2 (2)', 'Week 2', 'Week 1'])
+
+    // A course where week 5 was downloaded before week 2: shown in order, positions untouched.
+    const src = svc.createCourse({ name: 'Order 101', level: '' })
+    const w5 = svc.addWeek(src.id, 'Week 5')
+    const w2 = svc.addWeek(src.id, 'Week 2')
+    const f5 = join(dir, 'w5.studyweek')
+    const f2 = join(dir, 'w2.studyweek')
+    await share.exportWeek(w5.id, f5)
+    await share.exportWeek(w2.id, f2)
+    const mineCourse = svc.createCourse({ name: 'Order 101 (mine)', level: '' })
+    svc.addWeek(mineCourse.id, 'Week 1')
+    await share.importWeek(f5, { courseId: mineCourse.id })
+    await share.importWeek(f2, { courseId: mineCourse.id })
+    const c = svc.getCourse(mineCourse.id)
+    expect(c.weeks.map((w) => w.label)).toEqual(['Week 1', 'Week 2', 'Week 5'])
+    expect(c.weeks.map((w) => w.position)).toEqual([0, 2, 1])
+  })
+
+  it('remembers what you added, so adding it again can ask; your own is linked to what you published', async () => {
+    const market = await import('../../src/main/services/market')
+    const repo = await import('../../src/main/db/repo')
+    const course = svc.createCourse({ name: 'Copies 101', level: '' })
+    const src = svc.addWeek(course.id, 'Week 1')
+    const file = join(dir, 'copies.studyweek')
+    await share.exportWeek(src.id, file)
+    expect(market.copies()['remote-1']).toBeUndefined()
+
+    // Someone else's week: remembered, still never published automatically.
+    const a = await share.importWeek(file, { courseId: course.id })
+    market.recordAdded('remote-1', a.weekId, false)
+    expect(market.copies()['remote-1']).toMatchObject({ weekId: a.weekId, courseId: course.id, course: 'Copies 101', week: 'Week 1 (2)', how: 'added' })
+    expect(repo.getSetting<string[]>('market.importedWeeks', [])).toContain(a.weekId)
+    expect(market.publishedWeeks()[a.weekId]).toBeUndefined()
+
+    // Your own week, published from another device: linked, so publishing from here replaces it.
+    const b = await share.importWeek(file, { courseId: course.id })
+    market.recordAdded('remote-2', b.weekId, true)
+    expect(market.publishedWeeks()[b.weekId]).toBe('remote-2')
+    expect(repo.getSetting<string[]>('market.importedWeeks', [])).not.toContain(b.weekId)
+    expect(market.copies()['remote-2']).toMatchObject({ weekId: b.weekId, how: 'added' })
+
+    // Published from here: counts as having it.
+    repo.setSetting('market.published', { ...market.publishedWeeks(), [src.id]: 'remote-3' })
+    expect(market.copies()['remote-3']).toMatchObject({ weekId: src.id, how: 'published', at: null })
+
+    // Deleted since: you don't have it any more.
+    svc.deleteWeek(a.weekId)
+    expect(market.copies()['remote-1']).toBeUndefined()
+  })
+})
+
+describe('downloading a whole course', () => {
+  const week = (id: string, label: string, more: Partial<MarketWeek> = {}): MarketWeek => ({
+    id,
+    courseId: 'mc',
+    label,
+    number: 1,
+    author: 'alex',
+    topics: [],
+    topicCount: 3,
+    writtenCount: 3,
+    cardCount: 10,
+    files: [],
+    size: 1,
+    plannedWith: null,
+    writtenWith: [],
+    downloads: 0,
+    createdAt: '2026-01-01',
+    updatedAt: '2026-01-01',
+    mine: false,
+    ...more
+  })
+  const remote = [
+    week('a1', 'Week 1'),
+    week('b1', 'Week 1', { writtenCount: 5 }),
+    week('m2', 'Week 2', { mine: true, writtenCount: 1 }),
+    week('o2', 'Week 2', { writtenCount: 6 }),
+    week('a3', 'Week 3'),
+    week('a4', 'Week 4')
+  ]
+  const local = [
+    { id: 'L1', label: 'Week 1', topics: 4 },
+    { id: 'L3', label: 'Week 3', topics: 0 }
+  ]
+
+  it('adds one version of each week: yours, else the most written', () => {
+    const p = planAdd(remote, [], {}, null, 'all')
+    expect(p.items.map((i) => i.week.id)).toEqual(['b1', 'm2', 'a3', 'a4'])
+    expect(p.items.every((i) => i.into === null)).toBe(true)
+    expect(p.skipped).toBe(0)
+  })
+
+  it('with "missing", leaves out weeks your course has and fills its blank ones', () => {
+    const p = planAdd(remote, local, {}, 'C', 'missing')
+    expect(p.items.map((i) => [i.week.id, i.into?.id ?? null])).toEqual([
+      ['m2', null],
+      ['a3', 'L3'],
+      ['a4', null]
+    ])
+    expect(p.skipped).toBe(1)
+  })
+
+  it('with "all", adds weeks your course has its own of, but never one already added to it', () => {
+    const p = planAdd(remote, local, { a1: { courseId: 'C' }, a4: { courseId: 'other' } }, 'C', 'all')
+    // Week 1: you added a1 to this course, so that's the one you have.
+    expect(p.items.map((i) => i.week.id)).toEqual(['m2', 'a3', 'a4'])
+    expect(p.skipped).toBe(1)
+  })
+
+  it('knows your course under a different name', () => {
+    expect(sameCourse({ name: 'Software Engineering 1 (COMP23311)' }, { name: 'SE1', module: 'COMP23311' })).toBe(true)
+    expect(sameCourse({ name: 'Databases (COMP23111)' }, { name: 'Algorithms (COMP26120)' })).toBe(false)
+    expect(sameCourse({ name: 'Physics 101' }, { name: 'physics 101!' })).toBe(true)
+    expect(sameCourse({ name: 'Software Engineering 1' }, { name: 'Software Engineering 2' })).toBe(false)
+  })
+})
+
+describe('remembering where a marketplace course goes', () => {
+  it('links the course to where you added its weeks, and forgets it when that course is deleted', async () => {
+    const market = await import('../../src/main/services/market')
+    const src = svc.createCourse({ name: 'Links 101', level: '' })
+    const w = svc.addWeek(src.id, 'Week 1')
+    const file = join(dir, 'links.studyweek')
+    await share.exportWeek(w.id, file)
+    const into = svc.createCourse({ name: 'My Links', level: '' })
+    const a = await share.importWeek(file, { courseId: into.id })
+    market.recordAdded('remote-link-1', a.weekId, false, 'market-course-1')
+    expect(await market.linkedCourses(['market-course-1'])).toEqual({ 'market-course-1': into.id })
+    // Added somewhere else later: that's where it goes now.
+    const b = await share.importWeek(file, { newCourse: true })
+    market.recordAdded('remote-link-2', b.weekId, false, 'market-course-1')
+    expect(await market.linkedCourses(['market-course-1'])).toEqual({ 'market-course-1': b.courseId })
+    svc.deleteCourse(b.courseId, false)
+    expect((await market.linkedCourses(['market-course-1']))['market-course-1']).toBeUndefined()
+  })
+})
+
+describe('downloading a course from a marketplace (fake server)', () => {
+  it('plans, downloads and adds the missing weeks, fills a blank one, remembers them, and then has nothing missing', async () => {
+    const http = await import('node:http')
+    const market = await import('../../src/main/services/market')
+    const repo = await import('../../src/main/db/repo')
+    const { setSecret } = await import('../../src/main/secrets')
+
+    // Their course: Week 1 (planned, with topics), Week 2 (yours, from another device), Week 3.
+    const theirs = svc.createCourse({ name: 'Fake Server 101', level: '' })
+    const t1 = svc.addWeek(theirs.id, 'Week 1')
+    await svc.addFiles(t1.id, [PDF])
+    await svc.planWeek(t1.id, ctx())
+    const t2 = svc.addWeek(theirs.id, 'Week 2')
+    const t3 = svc.addWeek(theirs.id, 'Week 3')
+    const files: Record<string, Buffer> = {}
+    for (const [rid, w] of [['r1', t1], ['r2', t2], ['r3', t3]] as const) {
+      const f = join(dir, `${rid}.studyweek`)
+      await share.exportWeek(w.id, f)
+      files[rid] = readFileSync(f)
+    }
+    const mk = (id: string, label: string, mine = false) => ({
+      id, courseId: 'mc-fake', label, number: 1, author: mine ? 'me' : 'alex', topics: [], topicCount: 3, writtenCount: 0, cardCount: 0,
+      files: [], size: 1, plannedWith: null, writtenWith: [], downloads: 0, createdAt: '2026-01-01', updatedAt: '2026-01-01', mine
+    })
+    const course = {
+      id: 'mc-fake', name: 'Fake Server 101', module: '', level: '', authors: ['alex'], weekCount: 3, topicCount: 3, cardCount: 0, models: [],
+      downloads: 0, updatedAt: '2026-01-01', mine: true,
+      weeks: [mk('r1', 'Week 1'), mk('r2', 'Week 2', true), mk('r3', 'Week 3')]
+    }
+    const seen: string[] = []
+    const server = http.createServer((req, res) => {
+      seen.push(`${req.method} ${req.url} ${req.headers.authorization}`)
+      const file = req.url?.match(/^\/api\/weeks\/(\w+)\/file$/)?.[1]
+      if (req.url === '/api/courses/mc-fake') return res.end(JSON.stringify({ course }))
+      if (file && files[file]) return res.end(files[file])
+      res.statusCode = 404
+      res.end(JSON.stringify({ error: 'not found' }))
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as { port: number }).port
+    repo.setSetting('market.url', `http://127.0.0.1:${port}`)
+    setSecret('secret.marketKey', 'swm_fake')
+    try {
+      // Your course already has a blank Week 3.
+      const mine = svc.createCourse({ name: 'Fake Server 101', level: '' })
+      const blank3 = svc.addWeek(mine.id, 'Week 3')
+
+      const [plan] = await market.planAdds([{ marketCourseId: 'mc-fake', courseId: mine.id }], 'missing')
+      expect(plan.target).toBe('Fake Server 101')
+      expect(plan.items.map((i) => [i.id, i.into?.id ?? null])).toEqual([
+        ['r1', null],
+        ['r2', null],
+        ['r3', blank3.id]
+      ])
+
+      const progress: string[] = []
+      const meta: Record<string, unknown>[] = []
+      const r = await market.addPlanned([plan], { signal: new AbortController().signal, progress: (m) => progress.push(m), delta: () => {}, meta: (m) => meta.push(m) })
+      expect(r).toEqual({ added: 3, failed: [] })
+      expect(meta.at(-1)).toMatchObject({ marketAdded: 3, courseId: mine.id })
+      expect(seen.every((s) => s.endsWith('Bearer swm_fake'))).toBe(true)
+
+      // In week order, Week 3 filled rather than added again, Week 1's topics came through.
+      const c = svc.getCourse(mine.id)
+      expect(c.weeks.map((w) => w.label)).toEqual(['Week 1', 'Week 2', 'Week 3'])
+      expect(c.weeks.find((w) => w.label === 'Week 3')!.id).toBe(blank3.id)
+      expect(c.weeks.find((w) => w.label === 'Week 1')!.topics.length).toBeGreaterThan(0)
+
+      // Remembered: what you have, where the course goes, and your own week linked to what you published.
+      const have = market.copies()
+      expect(['r1', 'r2', 'r3'].map((id) => have[id]?.courseId)).toEqual([mine.id, mine.id, mine.id])
+      expect(await market.linkedCourses(['mc-fake'])).toEqual({ 'mc-fake': mine.id })
+      expect(Object.values(market.publishedWeeks())).toContain('r2')
+
+      // Nothing missing now, and "all" doesn't add copies of what you added either.
+      for (const mode of ['missing', 'all'] as const) {
+        const [again] = await market.planAdds([{ marketCourseId: 'mc-fake', courseId: mine.id }], mode)
+        expect(again.items).toEqual([])
+        expect(again.skipped).toBe(3)
+      }
+
+      // A week that won't download doesn't stop the rest.
+      const other = svc.createCourse({ name: 'Elsewhere', level: '' })
+      const broken = { ...plan, courseId: other.id, items: [{ ...plan.items[0], id: 'gone', into: null }, { ...plan.items[1], into: null }] }
+      const r2 = await market.addPlanned([broken], { signal: new AbortController().signal, progress: () => {}, delta: () => {}, meta: () => {} })
+      expect(r2.added).toBe(1)
+      expect(r2.failed[0]).toMatch(/Week 1: not found/)
+    } finally {
+      server.close()
+      setSecret('secret.marketKey', null)
+      repo.setSetting('market.url', '')
+    }
   })
 })

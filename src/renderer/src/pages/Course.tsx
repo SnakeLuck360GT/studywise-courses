@@ -4,14 +4,14 @@ import { offerPlan, writeTopics } from '../lib/courseFlows'
 import { importSharedWeek } from '../lib/weekShare'
 import { declinedMarketWeek, marketMatches, offerMarketWeek, publishAllToMarket, setCourseVisibility } from '../lib/market'
 import { TrimCardsModal } from '../components/TrimCards'
-import { examPhase, revisionMaxGapDays, type CourseFull, type WeekFull } from '@shared/course'
+import { examPhase, revisionMaxGapDays, sortWeeks, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
 import { useStore, toast } from '../lib/store'
 import { api, errorText } from '../lib/api'
 import { askText, confirmDialog } from '../lib/dialogs'
 import { Shell, PageTitle } from '../components/Shell'
 import { PrivatePill, VisibilityField, type Visibility } from '../components/Visibility'
 import { IS_MOBILE } from '../lib/platform'
-import { Button, Field, Input, Menu, MenuItem, Modal, Pill, ProgressBar, Textarea } from '../components/ui'
+import { Button, Field, Input, Menu, MenuItem, Modal, Pill, ProgressBar, Segmented, Textarea } from '../components/ui'
 import { FileDrop } from './Courses'
 import { runningJob } from './Week'
 import { DeckSettings } from './Deck'
@@ -34,6 +34,7 @@ export function CoursePage({ id }: { id: string }) {
       .catch((e) => setError(errorText(e)))
   useEffect(() => void load(), [id, version])
   const made = useMadeWeeks(c)
+  const [order, setOrder] = useWeekOrder()
 
   if (error)
     return (
@@ -166,9 +167,21 @@ export function CoursePage({ id }: { id: string }) {
 
       <CourseNote note={c.note} onEdit={() => setNoteOpen(true)} />
 
+      {c.weeks.length > 1 && (
+        <div className="mb-2 flex justify-end">
+          <Segmented
+            value={order}
+            onChange={setOrder}
+            options={[
+              { value: 'asc', label: 'Week 1 first' },
+              { value: 'desc', label: 'Latest week first' }
+            ]}
+          />
+        </div>
+      )}
       {c.weeks.length > 0 && (
         <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
-          {c.weeks.map((w) => (
+          {sortWeeks(c.weeks, order).map((w) => (
             <WeekRow key={w.id} c={c} w={w} made={made.has(w.id)} />
           ))}
         </ul>
@@ -378,6 +391,26 @@ function ExamDateModal({ courseId, date, onClose }: { courseId: string; date: st
       <Input type="date" value={value} onChange={(e) => setValue(e.target.value)} />
     </Modal>
   )
+}
+
+const ORDER_KEY = 'sw.weekOrder'
+
+/**
+ * Which way every course lists its weeks, by week number (so a week added
+ * later, like one from the marketplace, sits in its place). Remembered on
+ * this device.
+ */
+function useWeekOrder(): [WeekOrder, (o: WeekOrder) => void] {
+  const [order, setOrder] = useState<WeekOrder>(() => (localStorage.getItem(ORDER_KEY) === 'desc' ? 'desc' : 'asc'))
+  const set = (o: WeekOrder) => {
+    setOrder(o)
+    try {
+      localStorage.setItem(ORDER_KEY, o)
+    } catch {
+      /* storage unavailable: still works until you leave the page */
+    }
+  }
+  return [order, set]
 }
 
 /** Blank weeks (no topics) that someone has already published on the marketplace. */

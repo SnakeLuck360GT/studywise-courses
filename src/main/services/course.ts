@@ -31,6 +31,7 @@ import {
   sanitizeQuestions,
   explainMarks,
   shuffleMcqs,
+  sortWeeks,
   type AiTopic,
   type Course,
   type CourseFile,
@@ -155,7 +156,9 @@ export function getCourse(id: string): CourseFull {
   const weeks = (getDb().prepare('SELECT * FROM weeks WHERE course_id = ? ORDER BY position').all(id) as WeekRow[]).map(
     (w): WeekFull => ({ ...toWeek(w), files: files.filter((f) => f.week_id === w.id), topics: topics.filter((t) => t.week_id === w.id), card_count: counts.get(w.id) ?? 0 })
   )
-  return { ...c, weeks }
+  // In week-number order, so a week added out of order (downloaded later) sits in its place.
+  // Positions stay as they are: topic keys and "earlier weeks" when planning use them.
+  return { ...c, weeks: sortWeeks(weeks) }
 }
 
 /** Where a course file's copy lives, to open it or show it in its folder. */

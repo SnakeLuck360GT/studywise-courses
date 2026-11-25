@@ -64,6 +64,12 @@ function h<S extends z.ZodType, O>(input: S, fn: (input: z.output<S>, ctx: Ctx) 
 }
 const none = z.undefined().or(z.null()).or(z.object({}).strict()).optional()
 const id = z.string().min(1)
+/** Marketplace courses to download, each into one of your courses (null: a new one). */
+const addCourses = z.object({
+  targets: z.array(z.object({ marketCourseId: id, courseId: z.string().nullable() })).min(1).max(500),
+  mode: z.enum(['all', 'missing']),
+  onlyMine: z.boolean().optional()
+})
 const streamId = z.string().optional()
 
 const CardPatch = CardInput.partial().extend({
@@ -522,9 +528,14 @@ export const handlers = {
       if (!file) return null
       return { file, ...(await weekShare.previewWeek(file)) }
     }),
-    /** Add a shared week to one of your courses, or to a new course. */
-    importWeek: h(z.object({ file: z.string().min(1), courseId: z.string().nullable(), weekId: z.string().optional() }), (i) =>
-      weekShare.importWeek(i.file, i.weekId ? { weekId: i.weekId } : i.courseId ? { courseId: i.courseId } : { newCourse: true })
+    /** Add a shared week to one of your courses, or to a new course. `market`: it's that marketplace week (to remember you have it). */
+    importWeek: h(
+      z.object({ file: z.string().min(1), courseId: z.string().nullable(), weekId: z.string().optional(), market: z.object({ id, mine: z.boolean(), courseId: z.string().optional() }).optional() }),
+      async (i) => {
+        const r = await weekShare.importWeek(i.file, i.weekId ? { weekId: i.weekId } : i.courseId ? { courseId: i.courseId } : { newCourse: true })
+        if (i.market) market.recordAdded(i.market.id, r.weekId, i.market.mine, i.market.courseId)
+        return r
+      }
     ),
     /** Which of a week's (or a topic's) recall cards aren't worth keeping. Only card text is sent. */
     suggestTrim: h(z.union([z.object({ weekId: id, topicId: z.string().optional() }), z.object({ courseId: id })]), (i) => course.suggestTrim(i)),
@@ -549,6 +560,10 @@ export const handlers = {
     course: h(z.object({ id }), (i) => market.getCourse(i.id)),
     mine: h(none, () => market.mine()),
     published: h(none, () => market.publishedWeeks()),
+    /** Marketplace weeks you already have here (added or published from here), by marketplace week id. */
+    copies: h(none, () => market.copies()),
+    /** Which of your courses each marketplace course's weeks go into (remembered), by marketplace course id. */
+    linkedCourses: h(z.object({ ids: z.array(id).max(500) }), (i) => market.linkedCourses(i.ids)),
     publish: h(z.object({ weekId: id }), (i) => market.publish(i.weekId)),
     /** Weeks that can be published (every course's, or one course's), and which are new, changed or already up to date. */
     publishable: h(z.object({ courseId: z.string().optional() }).optional(), (i) => market.publishPlan(i?.courseId)),
@@ -565,7 +580,17 @@ export const handlers = {
       const file = await market.download(i.id)
       return { file, ...(await weekShare.previewWeek(file)) }
     }),
-    similar: h(z.object({ weekId: id }), (i) => market.similar(i.weekId))
+    similar: h(z.object({ weekId: id }), (i) => market.similar(i.weekId)),
+    /** What downloading these courses (all their weeks, or the ones you don't have) would add, and where. */
+    planAdd: h(addCourses, (i) => market.planAdds(i.targets, i.mode, !!i.onlyMine)),
+    /** Download them as a job. */
+    addMany: h(addCourses, async (i) => {
+      const plans = await market.planAdds(i.targets, i.mode, !!i.onlyMine)
+      const n = plans.reduce((s, p) => s + p.items.length, 0)
+      if (!n) throw new Error('You already have every one of those weeks.')
+      const title = plans.length === 1 ? `Download ${plans[0].name}` : `Download ${n} weeks`
+      return startJob('other', title, (ctx) => market.addPlanned(plans, ctx))
+    })
   },
   stats: {
     /** Time studied, topics and card stats for the home page. */

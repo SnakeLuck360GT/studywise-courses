@@ -1,6 +1,6 @@
-import { AUTO_PUBLISH_SETTING, modelLabel, type MarketMatch, type MarketModel, type MarketWeek } from '@shared/market'
+import { AUTO_PUBLISH_SETTING, modelLabel, sameCourse, type AddMode, type MarketCopy, type MarketMatch, type MarketModel, type MarketWeek } from '@shared/market'
 import { api, errorText } from './api'
-import { confirmDialog } from './dialogs'
+import { chooseDialog, confirmDialog, confirmOrElse } from './dialogs'
 import { importSharedWeek } from './weekShare'
 import { toast, useStore } from './store'
 
@@ -14,21 +14,46 @@ export function modelsText(models: MarketModel[]): string {
 
 export const weekSummary = (w: MarketWeek) => `${w.writtenCount} of ${plural(w.topicCount, 'topic')} written · ${plural(w.cardCount, 'flashcard')} · ${plural(w.files.length, 'file')}`
 
-/** Download a published week, then ask which course it goes in (like a shared week). */
-export async function addMarketWeek(remoteWeekId: string, courseId?: string): Promise<void> {
+/** Marketplace weeks you already have here, by marketplace week id (none if it can't tell). */
+export const marketCopies = (): Promise<Record<string, MarketCopy>> => api.market.copies().catch(() => ({}))
+
+/** "Week 3 in Algorithms". */
+export const copyText = (c: MarketCopy) => `${c.week} in ${c.course}`
+
+/**
+ * Before downloading a marketplace week: if you already have it here, say
+ * where, and only go on if you want a second copy. True to go on.
+ */
+async function checkNotAdded(remoteWeekId: string, whereTo?: string): Promise<boolean> {
+  const c = (await marketCopies())[remoteWeekId]
+  if (!c) return true
+  return confirmDialog(
+    `You already have this week: ${copyText(c)}`,
+    `${c.how === 'published' ? 'You published it from this device.' : `You added it on ${new Date(c.at!).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}.`} Adding it ${whereTo ? `to ${whereTo} ` : 'again '}makes a second copy, with its own progress.`,
+    { confirmText: 'Add another copy' }
+  )
+}
+
+/** Download a published week, then ask which course it goes in (like a shared week). True when it was added. */
+export async function addMarketWeek(w: { id: string; mine: boolean; courseId: string }): Promise<boolean> {
   try {
-    const { file } = await api.market.download({ id: remoteWeekId })
-    await importSharedWeek({ file, courseId })
+    if (!(await checkNotAdded(w.id))) return false
+    // The course you put this course's weeks in before: straight there, no "which course?".
+    const linked = await linkedCourse(w.courseId)
+    const { file } = await api.market.download({ id: w.id })
+    return await importSharedWeek({ file, courseId: linked ?? undefined, remembered: !!linked, market: { id: w.id, mine: w.mine, courseId: w.courseId } })
   } catch (e) {
     toast(errorText(e), 'bad')
+    return false
   }
 }
 
 /** Instead of planning a week yourself, fill it with a published one. */
-export async function useMarketWeekHere(remoteWeekId: string, week: { id: string; label: string }): Promise<boolean> {
+export async function useMarketWeekHere(remote: { id: string; mine: boolean; courseId?: string }, week: { id: string; label: string }): Promise<boolean> {
   try {
-    const { file } = await api.market.download({ id: remoteWeekId })
-    const r = await api.courses.importWeek({ file, courseId: null, weekId: week.id })
+    if (!(await checkNotAdded(remote.id, week.label))) return false
+    const { file } = await api.market.download({ id: remote.id })
+    const r = await api.courses.importWeek({ file, courseId: null, weekId: week.id, market: { id: remote.id, mine: remote.mine, courseId: remote.courseId } })
     toast(`Added ${plural(r.topics, 'topic')} and ${plural(r.cards, 'card')} to ${week.label}. Nothing was generated.`, 'good')
     useStore.getState().bump()
     return true
@@ -187,7 +212,7 @@ export async function chooseMarketWeek(week: { id: string; label: string }, matc
   if (a === 'plan') declined.add(week.id)
   if (!a || a === 'plan') return false
   found.delete(week.id)
-  return useMarketWeekHere(a.use, week)
+  return useMarketWeekHere({ id: a.use, mine: a.mine, courseId: a.courseId }, week)
 }
 
 /** From a week's ⋯ menu: look now, and say so when nobody has made it. */
@@ -208,3 +233,111 @@ export async function findMarketWeek(week: { id: string; label: string }): Promi
 }
 
 export const matchPercent = (m: MarketMatch) => `${Math.round(m.score * 100)}%`
+
+// ---------------------------------------------------------------------------
+// Downloading a whole course, or the weeks of it you don't have
+
+type Target = { marketCourseId: string; courseId: string | null }
+
+/** Your course a marketplace course goes into by default: the same course under its name or module code. */
+const matching = <T extends { name: string; module: string }>(courses: T[], c: { name: string; module?: string }) => courses.find((x) => sameCourse(x, c))
+
+const list = (labels: string[], max = 10) => (labels.length > max ? `${labels.slice(0, max).join(', ')} and ${labels.length - max} more` : labels.join(', '))
+
+/** The course of yours a marketplace course's weeks went into before (null when there isn't one). */
+async function linkedCourse(marketCourseId: string): Promise<string | null> {
+  const links = await api.market.linkedCourses({ ids: [marketCourseId] }).catch((): Record<string, string> => ({}))
+  return links[marketCourseId] ?? null
+}
+
+/**
+ * Say what's coming, then download it as a job: 'started', or false. With
+ * `remembered` (the remembered course's name), the confirm offers
+ * "Somewhere else…", which answers 'alt'.
+ */
+async function confirmAndAdd(targets: Target[], mode: AddMode, onlyMine: boolean, remembered?: string): Promise<'started' | 'alt' | false> {
+  const plans = await api.market.planAdd({ targets, mode, onlyMine })
+  const n = plans.reduce((s, p) => s + p.items.length, 0)
+  const skipped = plans.reduce((s, p) => s + p.skipped, 0)
+  if (!n) {
+    toast(skipped ? `You already have ${skipped === 1 ? 'that week' : `all ${skipped} of those weeks`}${remembered ? ` in ${remembered}` : ''}.` : 'There are no weeks to download.', 'info')
+    return false
+  }
+  const where = plans
+    .filter((p) => p.items.length)
+    .map((p) => `${p.target ? `Into ${p.target}` : `Into a new course for ${p.name}`}: ${list(p.items.map((i) => (i.into ? `${i.label} (fills your blank ${i.into.label})` : i.label)))}.`)
+  const message = [
+    ...where,
+    remembered ? `${remembered} is where you put this course’s weeks before.` : '',
+    skipped ? `${plural(skipped, 'week')} you already have ${skipped === 1 ? 'is' : 'are'} left out.` : '',
+    onlyMine ? '' : 'Where several people published the same week, yours is used if you published one, otherwise the most complete.',
+    'Nothing is generated, so it costs no tokens.'
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const title = `Download ${plural(n, 'week')}?`
+  const confirmText = `Download ${plural(n, 'week')}`
+  const a = remembered ? await confirmOrElse(title, message, { confirmText, altText: 'Somewhere else…' }) : (await confirmDialog(title, message, { confirmText })) ? 'ok' : null
+  if (a !== 'ok') return a === 'alt' ? 'alt' : false
+  await api.market.addMany({ targets, mode, onlyMine })
+  toast(`Downloading ${plural(n, 'week')}. You can follow it in Jobs.`, 'info')
+  return 'started'
+}
+
+/**
+ * Download a marketplace course: every week, or just the weeks your course
+ * doesn't have yet. Asks which of your courses they go into (the same course
+ * if you have it), then what's coming.
+ */
+export async function downloadMarketCourse(course: { id: string; name: string; module?: string }, mode: AddMode): Promise<boolean> {
+  try {
+    const courses = await api.courses.list()
+    // Where you put this course's weeks before: straight there, with "Somewhere else…" in the confirm.
+    const linked = await linkedCourse(course.id)
+    const remembered = courses.find((c) => c.id === linked)
+    if (remembered) {
+      const r = await confirmAndAdd([{ marketCourseId: course.id, courseId: remembered.id }], mode, false, remembered.name)
+      if (r !== 'alt') return r === 'started'
+    }
+    const choice = await chooseDialog(
+      mode === 'all' ? `Download all of ${course.name}` : `Download the weeks of ${course.name} you don’t have`,
+      [{ value: '', label: 'A new course' }, ...courses.map((c) => ({ value: c.id, label: `Add to ${c.name}` }))],
+      {
+        message:
+          mode === 'all'
+            ? 'Every week goes in, except ones you’ve already added to that course from the marketplace. Blank weeks of yours with the same number are filled.'
+            : 'Weeks that course already has (by week number) are left out, and blank ones are filled.',
+        confirmText: 'Next',
+        initial: matching(courses, course)?.id ?? ''
+      }
+    )
+    if (choice === null) return false
+    return (await confirmAndAdd([{ marketCourseId: course.id, courseId: choice || null }], mode, false)) === 'started'
+  } catch (e) {
+    toast(errorText(e), 'bad')
+    return false
+  }
+}
+
+/**
+ * Download everything you've published (or what this device is missing of it),
+ * say on a new computer: each course into your course of the same name, or a
+ * new one.
+ */
+export async function downloadMyWeeks(mode: AddMode): Promise<boolean> {
+  try {
+    const [mine, courses] = await Promise.all([api.market.mine(), api.courses.list()])
+    const names = new Map(mine.map((w) => [w.courseId, w.courseName]))
+    if (!names.size) {
+      toast('You haven’t published anything yet.', 'info')
+      return false
+    }
+    // Each into the course you put it in before, else your course of the same name, else a new one.
+    const linked = await api.market.linkedCourses({ ids: [...names.keys()] })
+    const targets = [...names].map(([marketCourseId, name]) => ({ marketCourseId, courseId: linked[marketCourseId] ?? matching(courses, { name })?.id ?? null }))
+    return (await confirmAndAdd(targets, mode, true)) === 'started'
+  } catch (e) {
+    toast(errorText(e), 'bad')
+    return false
+  }
+}

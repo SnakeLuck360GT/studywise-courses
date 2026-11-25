@@ -20,7 +20,7 @@ export async function offerPlan(week: { id: string; label: string; topics?: { st
     if (matches.length) {
       const a = await askAboutMatches(week.label, matches)
       if (a === null) return false
-      if (a !== 'plan') return useMarketWeekHere(a.use, week)
+      if (a !== 'plan') return useMarketWeekHere({ id: a.use, mine: a.mine, courseId: a.courseId }, week)
     }
   }
   const written = week.topics?.filter((t) => t.status === 'ready').length ?? 0
