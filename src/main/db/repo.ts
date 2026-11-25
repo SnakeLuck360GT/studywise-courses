@@ -250,7 +250,8 @@ function withDecks(n: NoteRow): Note {
 }
 export function listNotes(): Omit<Note, 'content'>[] {
   const rows = getDb()
-    .prepare('SELECT id, folder_id, title, module, type, week, created_at, updated_at FROM notes ORDER BY updated_at DESC')
+    // Revision order within a folder; notes made before ordering come after, newest first.
+    .prepare('SELECT id, folder_id, title, module, type, week, created_at, updated_at, position FROM notes ORDER BY position IS NULL, position, updated_at DESC')
     .all() as Omit<NoteRow, 'content'>[]
   const links = getDb().prepare('SELECT note_id, deck_id FROM note_decks').all() as { note_id: string; deck_id: string }[]
   return rows.map((r) => ({ ...r, deck_ids: links.filter((l) => l.note_id === r.id).map((l) => l.deck_id) }))
@@ -273,7 +274,9 @@ export function createNote(input: Partial<Pick<Note, 'title' | 'module' | 'type'
     created_at: t,
     updated_at: t
   }
-  getDb().prepare('INSERT INTO notes VALUES (@id, @folder_id, @title, @module, @type, @week, @content, @created_at, @updated_at)').run(n)
+  getDb()
+    .prepare('INSERT INTO notes (id, folder_id, title, module, type, week, content, created_at, updated_at) VALUES (@id, @folder_id, @title, @module, @type, @week, @content, @created_at, @updated_at)')
+    .run(n)
   return getNote(n.id)
 }
 export function updateNote(id: string, patch: Partial<Pick<Note, 'title' | 'module' | 'type' | 'week' | 'content' | 'folder_id'>>): Note {

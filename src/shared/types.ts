@@ -143,7 +143,9 @@ export const Note = z.object({
   content: z.string(),
   deck_ids: z.array(z.string()),
   created_at: z.string(),
-  updated_at: z.string()
+  updated_at: z.string(),
+  /** Place in its folder, in revision order; null for notes made before ordering (listed after the ordered ones). */
+  position: z.number().nullable().default(null)
 })
 export type Note = z.infer<typeof Note>
 

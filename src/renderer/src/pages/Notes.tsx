@@ -28,7 +28,8 @@ import {
   Check,
   Copy,
   X,
-  Link2
+  Link2,
+  ListOrdered
 } from 'lucide-react'
 import type { Note, Folder, CustomAction } from '@shared/types'
 import { NOTE_TYPES } from '@shared/types'
@@ -207,6 +208,27 @@ export function Notes({ noteId }: { noteId: string | null }) {
             />
           ))}
           <div className="mx-2 my-2 border-t border-line" />
+          {notes.length > 1 && (
+            <div className="mb-1 flex items-center justify-between px-2 text-[0.72rem] font-semibold text-muted">
+              Notes
+              <button
+                onClick={async () => {
+                  const scope = folderId ? folders.find((f) => f.id === folderId)?.name : null
+                  try {
+                    const r = await api.notes.revisionOrder({ folderId })
+                    load()
+                    toast(`${scope ? `${scope}: ` : ''}${r.ordered} note${r.ordered === 1 ? '' : 's'} in revision order (by week, then lecture or topic)`, 'good')
+                  } catch (e) {
+                    toast(errorText(e), 'bad')
+                  }
+                }}
+                className="flex items-center gap-1 rounded-full px-2 py-1 font-medium hover:bg-surface-2 hover:text-ink"
+                title={folderId ? 'Put the notes in this folder (and its folders) in revision order: by week, then lecture or topic' : 'Put every folder’s notes in revision order: by week, then lecture or topic'}
+              >
+                <ListOrdered className="size-3.5" /> Revision order
+              </button>
+            </div>
+          )}
           <div className="stagger flex flex-col gap-0.5">
             {groups.filter(isShown).map((g) => {
               const open = isOpen(g)

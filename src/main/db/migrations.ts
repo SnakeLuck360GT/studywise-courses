@@ -278,6 +278,9 @@ export const MIGRATIONS: string[] = [
   /* 12: courses and weeks can be private: never published to the marketplace (a week is private if it or its course is) */ `
   ALTER TABLE courses ADD COLUMN private INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE weeks ADD COLUMN private INTEGER NOT NULL DEFAULT 0;
+  `,
+  /* 13: notes have a place in their folder, so they can be listed in revision order (null: made before this, listed after) */ `
+  ALTER TABLE notes ADD COLUMN position REAL;
   `
 ]
 

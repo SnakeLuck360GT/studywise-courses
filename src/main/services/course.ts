@@ -7,6 +7,7 @@ import { PDFDocument } from 'pdf-lib'
 import { getDb, uid, now, json } from '../db'
 import { withPointCount } from '@shared/ssText'
 import * as repo from '../db/repo'
+import { placeNote } from './noteOrder'
 import { runAI } from '../ai'
 import { paths } from '../paths'
 import { extractText, pdfPageCount, IMAGE_EXT, isImageFile } from '../files'
@@ -1501,6 +1502,8 @@ export async function syncTopicNote(topicId: string): Promise<string> {
   if (!noteId) {
     noteId = repo.createNote({ ...fields, folder_id: weekNoteFolder(week.id) }).id
     getDb().prepare('UPDATE topics SET note_id = ? WHERE id = ?').run(noteId, topicId)
+    // In course order in its folder (by week, then topic), not newest first.
+    placeNote(noteId)
   }
   repo.linkNoteDeck(noteId, ensureWeekDeck(t.week_id), true)
   return noteId

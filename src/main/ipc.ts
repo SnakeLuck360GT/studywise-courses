@@ -19,6 +19,7 @@ import * as learn from './services/learn'
 import * as updates from './updater'
 import * as explain from './services/explain'
 import * as course from './services/course'
+import * as noteOrder from './services/noteOrder'
 import * as weekShare from './services/weekShare'
 import * as market from './services/market'
 import { CourseQuestion, NOTE_LEVELS } from '@shared/course'
@@ -337,11 +338,19 @@ export const handlers = {
         id,
         patch: z.object({ title: z.string().optional(), module: z.string().optional(), type: z.string().optional(), week: z.string().optional(), content: z.string().optional(), folder_id: z.string().nullable().optional() })
       }),
-      (i) => repo.updateNote(i.id, i.patch)
+      (i) => {
+        const before = repo.getNote(i.id).folder_id
+        const n = repo.updateNote(i.id, i.patch)
+        // Moved to another folder: its place there, in revision order.
+        if (i.patch.folder_id !== undefined && i.patch.folder_id !== before && n.position !== null) noteOrder.placeNote(i.id)
+        return n
+      }
     ),
     delete: h(z.object({ id }), (i) => repo.deleteNote(i.id)),
     linkDeck: h(z.object({ noteId: id, deckId: id, linked: z.boolean() }), (i) => repo.linkNoteDeck(i.noteId, i.deckId, i.linked)),
     forDeck: h(z.object({ deckId: id }), (i) => repo.notesForDeck(i.deckId)),
+    /** Put a folder's notes (and the folders inside it), or every note, in revision order. */
+    revisionOrder: h(z.object({ folderId: z.string().nullable().default(null) }), (i) => ({ ordered: noteOrder.putInRevisionOrder(i.folderId) })),
     ai: h(
       z.object({ kind: z.enum(['simplify', 'shorten', 'fix_formatting', 'expand']), text: z.string().min(1), noteId: z.string().nullable(), streamId }),
       (i, ctx) => explain.noteAction(i.kind, i.text, i.noteId, ctx.stream(i.streamId) ?? (() => {}))

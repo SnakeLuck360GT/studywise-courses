@@ -46,6 +46,7 @@ export const CHANNELS = [
   'notes.delete',
   'notes.linkDeck',
   'notes.forDeck',
+  'notes.revisionOrder',
   'notes.ai',
   'notes.quiz',
   'gen.notes',

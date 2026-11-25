@@ -8,6 +8,7 @@ import { prepareSources, pdfPageCount, extractText, type SourceChunk } from '../
 import type { JobContext } from '../jobs'
 import { simpleTracker } from './liveProgress'
 import * as repo from '../db/repo'
+import { placeNote } from './noteOrder'
 import { parseStudySmarterText, validateCards, dedupeCards, normalizeQuestion, type CardWarning } from '@shared/ssText'
 import type { GeneratedCard } from '@shared/questions'
 import type { CardFormat, CardSource } from '@shared/types'
@@ -108,6 +109,8 @@ export async function generateNotes(input: GenerateNotesInput, ctx: JobContext):
   const title =
     input.title || (s.files[0] ? basename(s.files[0], extname(s.files[0])) : s.noteIds[0] ? repo.getNote(s.noteIds[0]).title : s.topic || 'New note')
   const note = repo.createNote({ title: linking && !input.title ? `Linking all ${title} texts` : title, module: input.module, type: input.type, week: input.week, folder_id: input.folderId ?? null })
+  // In revision order in its folder (by week, then lecture), not newest first.
+  placeNote(note.id)
   if (input.deckId) repo.linkNoteDeck(note.id, input.deckId, true)
   ctx.meta({ noteId: note.id })
   ctx.progress('Preparing sources…')
