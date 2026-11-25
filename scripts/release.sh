@@ -47,7 +47,14 @@ git push -q origin "$VERSION" 2>/dev/null || true
 id=$(api "https://api.github.com/repos/$REPO/releases?per_page=50" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s).find(x=>x.tag_name===process.argv[1]);console.log(r?r.id:"")}catch{console.log("")}})' "$VERSION")
 if [ -z "$id" ]; then
   body=$(node -e 'const fs=require("fs");console.log(JSON.stringify({tag_name:process.argv[1],name:"Studywise Courses "+process.argv[1].slice(1),draft:true,body:fs.existsSync(process.argv[2])?fs.readFileSync(process.argv[2],"utf8"):""}))' "$VERSION" "$NOTES")
-  id=$(api -X POST "https://api.github.com/repos/$REPO/releases" -d "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).id))')
+  # GitHub sometimes refuses this straight after the tag is pushed: try a few times.
+  for try in 1 2 3 4 5; do
+    id=$(api -X POST "https://api.github.com/repos/$REPO/releases" -d "$body" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).id||"")}catch{console.log("")}})')
+    [ -n "$id" ] && break
+    echo "Couldn't create the release yet (try $try of 5), waiting…"
+    sleep $((try * 3))
+  done
+  [ -n "$id" ] || { echo "GitHub wouldn't create the release. Run this script again: it picks up where it left off."; exit 1; }
   echo "Created release $VERSION ($id)"
 else
   echo "Release $VERSION exists ($id), uploading assets"
