@@ -29,6 +29,7 @@ import * as library from './library'
 import { paths } from './paths'
 import { getUsage } from './usage'
 import * as syncServer from './sync/server'
+import * as syncLink from './sync/link'
 import {
   CardInput,
   CardFormat,
@@ -603,7 +604,12 @@ export const handlers = {
     status: h(none, () => syncServer.syncStatus()),
     setEnabled: h(z.object({ enabled: z.boolean() }), (i) => syncServer.setSyncEnabled(i.enabled)),
     pairCode: h(none, () => syncServer.newPairCode()),
-    unpair: h(z.object({ id }), (i) => syncServer.unpair(i.id))
+    unpair: h(z.object({ id }), (i) => syncServer.unpair(i.id)),
+    // This computer syncing with another computer.
+    linkStatus: h(none, () => syncLink.linkStatus()),
+    link: h(z.object({ address: z.string().min(1).max(200), code: z.string().min(1).max(20) }), (i) => syncLink.link(i.address, i.code)),
+    unlink: h(none, () => syncLink.unlink()),
+    linkNow: h(none, () => syncLink.syncNow())
   },
 
   jobs: {

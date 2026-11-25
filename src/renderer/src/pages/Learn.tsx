@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { keyLabel } from '@shared/keymap'
-import { X, Settings2, Lightbulb, RefreshCw, MessageCircleQuestion, ThumbsUp, SkipForward, ArrowRight, Sparkles, Trophy, Brain, CheckCircle2, XCircle, CircleDot, Database, RotateCcw, Undo2 } from 'lucide-react'
+import { X, Settings2, Lightbulb, RefreshCw, MessageCircleQuestion, ThumbsUp, SkipForward, ArrowRight, Sparkles, Trophy, Brain, CheckCircle2, XCircle, CircleDot, Database, RotateCcw, Undo2, WifiOff } from 'lucide-react'
 import { reshuffleLearnQuestion, type LearnQuestion, type LearnAnswer, type Mark } from '@shared/questions'
 import { insertRetry } from '@shared/retry'
 import { QUESTION_LABELS, QUESTION_TYPES, type LearnSettings, type CustomAction, type QuestionType } from '@shared/types'
@@ -34,6 +34,7 @@ type Turn = { base: number; retry: number }
 export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] }) {
   const go = useStore((s) => s.go)
   const openExplain = useStore((s) => s.openExplain)
+  const offline = useStore((s) => s.offline)
   const [session, setSession] = useState<{ id: string; total: number; settings: LearnSettings } | null>(null)
   const [questions, setQuestions] = useState<(LearnQuestion | undefined)[]>([])
   // idx is the position in `order`; questions[] stays indexed by the plan, so batches still land in place.
@@ -80,6 +81,7 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
     setError(null)
     void api.decks.get({ id: deckId }).then((d) => setDeckName(d.name))
     void api.actions.list().then(setActions)
+    // Turning offline mode on or off starts again, with questions made the new way.
     api.learn
       .start({ deckId, cardIds })
       .then((s) => {
@@ -95,7 +97,7 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
     return () => {
       alive = false
     }
-  }, [deckId, cardIds, loadBatch, restartKey])
+  }, [deckId, cardIds, loadBatch, restartKey, offline])
 
   // Keep one batch ahead.
   useEffect(() => {
@@ -232,15 +234,15 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
       'learn.true': () => q?.type === 'true_false' && !slot.mark && submit({ type: 'true_false', value: true }),
       'learn.false': () => q?.type === 'true_false' && !slot.mark && submit({ type: 'true_false', value: false }),
       'learn.hint': hint,
-      'learn.feedback': () => slot.mark && getFeedback(),
+      'learn.feedback': () => slot.mark && !offline && getFeedback(),
       'learn.skip': () => !slot.marking && next(),
       'learn.override': () => (slot.overridden ? undoOverride() : override()),
-      'learn.regenerate': regenerate,
+      'learn.regenerate': !offline && regenerate,
       'learn.settings': () => setSettingsOpen(true),
       'ai.explain': () => explain(),
       'study.end': () => (finished ? go({ name: 'deck', id: deckId }) : finish())
     },
-    [q, slot, idx, order, session, finished, hinting]
+    [q, slot, idx, order, session, finished, hinting, offline]
   )
 
   if (error)
@@ -305,8 +307,9 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
 
   const total = order.length || session?.total || 0
   const verdict = slot.mark?.verdict
-  const beforeActions = actions.filter((a) => a.placements.includes('learn_question'))
-  const afterActions = actions.filter((a) => a.placements.includes('after_answer'))
+  // Offline: no AI buttons at all (custom actions are AI too).
+  const beforeActions = offline ? [] : actions.filter((a) => a.placements.includes('learn_question'))
+  const afterActions = offline ? [] : actions.filter((a) => a.placements.includes('after_answer'))
 
   return (
     <div className="flex min-h-full flex-col px-[clamp(16px,3vw,40px)] pt-5 pb-10">
@@ -346,7 +349,7 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
         {!q ? (
           <div className="flex flex-col gap-4">
             <div className="flex items-center gap-2 text-muted">
-              <Sparkles className="size-4 text-accent" /> Writing questions <Dots />
+              <Sparkles className="size-4 text-accent" /> {offline ? 'Getting questions ready' : 'Writing questions'} <Dots />
             </div>
             <div className="skeleton h-10 w-3/4" />
             <div className="grid gap-2.5 sm:grid-cols-2">
@@ -369,6 +372,11 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
                   <Database className="size-3" /> cached
                 </Pill>
               )}
+              {offline && (
+                <Pill tone="warn">
+                  <WifiOff className="size-3" /> Offline
+                </Pill>
+              )}
               {/* The tools wrap as one right-aligned group rather than one button at a time. */}
               <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
               {!slot.mark && q.type !== 'read_understand' && q.type !== 'match_pairs' && (
@@ -376,14 +384,16 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
                   Hint {slot.hints.length > 0 && `${slot.hints.length}/2`}
                 </Button>
               )}
-              {!slot.mark && q.type !== 'match_pairs' && q.type !== 'fill_blank' && (
+              {!offline && !slot.mark && q.type !== 'match_pairs' && q.type !== 'fill_blank' && (
                 <Button size="sm" variant="ghost" onClick={regenerate} loading={regenerating} title={keyLabel("Regenerate (⌥⌘R)")}>
                   Regenerate
                 </Button>
               )}
-              <Button size="sm" variant="ghost" onClick={() => explain()} title={keyLabel("Explain (⌘E)")}>
-                Explain
-              </Button>
+              {!offline && (
+                <Button size="sm" variant="ghost" onClick={() => explain()} title={keyLabel("Explain (⌘E)")}>
+                  Explain
+                </Button>
+              )}
               {!slot.mark &&
                 beforeActions.map((a) => (
                   <Button key={a.id} size="sm" variant="ghost" onClick={() => runAction(a)}>
@@ -437,7 +447,11 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
                     Continue <Kbd className="ml-1 border-current/30">↩</Kbd>
                   </Button>
                 </div>
-                <FeedbackPanel slot={slot} onFeedback={getFeedback} onExplain={explain} actions={afterActions} onAction={runAction} />
+                {offline ? (
+                  verdict !== 'correct' && q.type === 'fill_blank' && <p className="text-[0.88rem] text-muted">Offline, a blank only counts when it matches exactly. If yours means the same, press I was right.</p>
+                ) : (
+                  <FeedbackPanel slot={slot} onFeedback={getFeedback} onExplain={explain} actions={afterActions} onAction={runAction} />
+                )}
               </div>
             )}
 

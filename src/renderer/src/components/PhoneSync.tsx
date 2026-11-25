@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Smartphone, Laptop, RefreshCw, Trash2, Wifi, WifiOff, CheckCircle2, AlertTriangle } from 'lucide-react'
-import type { SyncStatus } from '@shared/types'
+import type { LinkStatus, SyncStatus } from '@shared/types'
 import type { PhoneSyncStatus } from '@shared/mobile'
 import { api, errorText, onEvent } from '../lib/api'
 import { mobile } from '../lib/platform'
@@ -61,12 +61,13 @@ export function DesktopPhoneTab() {
     <div className="grid gap-4 lg:grid-cols-2">
       <Card className="flex flex-col gap-4">
         <h3 className="flex items-center gap-2 text-lg font-semibold">
-          <Smartphone className="size-5" /> Sync with your phone
+          <Smartphone className="size-5" /> Sync with your phone or another computer
         </h3>
         <p className="text-[0.92rem] text-muted">
           The Studywise phone app (Android or iPhone) keeps its own copy of your decks, notes and courses, so you can study offline. When it can reach this computer it syncs both ways: progress, reviews and edits made on either side. AI features on the phone (Explain, marking, writing topics) run here, through your Claude login.
         </p>
-        <Toggle checked={s.enabled} disabled={busy} onChange={setEnabled} label="Let paired phones on this network sync" />
+        <p className="text-[0.92rem] text-muted">Another computer can link to this one the same way and gets everything, course files included, with no file to copy.</p>
+        <Toggle checked={s.enabled} disabled={busy} onChange={setEnabled} label="Let paired phones and computers on this network sync" />
         {s.enabled && (
           <div className="rounded-lg bg-surface-2 px-4 py-3 text-[0.9rem]">
             {s.running ? (
@@ -86,17 +87,17 @@ export function DesktopPhoneTab() {
           </div>
         )}
         <p className="text-[0.85rem] text-muted">
-          The phone and this computer need to be on the same Wi‑Fi (or the same Tailscale network). The first time, Windows may ask whether Studywise can use the network: allow it on private networks.
+          The other device and this computer need to be on the same Wi‑Fi (or the same Tailscale network). The first time, Windows may ask whether Studywise can use the network: allow it on private networks.
         </p>
       </Card>
 
       <Card className="flex flex-col gap-4">
-        <h3 className="text-lg font-semibold">Pair a phone</h3>
+        <h3 className="text-lg font-semibold">Pair a device</h3>
         {!s.enabled || !s.running ? (
           <p className="text-[0.92rem] text-muted">Turn on syncing first.</p>
         ) : s.pairCode ? (
           <div className="flex flex-col gap-3">
-            <p className="text-[0.92rem] text-muted">On the phone, open Settings → Sync and enter:</p>
+            <p className="text-[0.92rem] text-muted">On a phone, open Settings → Sync. On another computer, open Settings → Devices → Link to another computer. Then enter:</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-line bg-surface-2 px-4 py-3">
                 <div className="text-[0.8rem] text-muted">Computer address</div>
@@ -112,16 +113,16 @@ export function DesktopPhoneTab() {
           </div>
         ) : (
           <div className="flex flex-col items-start gap-3">
-            <p className="text-[0.92rem] text-muted">Get a one-time code to type on the phone.</p>
+            <p className="text-[0.92rem] text-muted">Get a one-time code to type on the phone or the other computer.</p>
             <Button variant="primary" onClick={async () => setS(await api.sync.pairCode())}>
-              <Smartphone className="size-4" /> Pair a phone
+              <Smartphone className="size-4" /> Pair a device
             </Button>
           </div>
         )}
 
         {s.devices.length > 0 && (
           <div className="mt-2">
-            <div className="mb-2 text-[0.85rem] font-semibold text-muted">Paired phones</div>
+            <div className="mb-2 text-[0.85rem] font-semibold text-muted">Paired devices</div>
             <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
               {s.devices.map((d) => (
                 <li key={d.id} className="flex items-center gap-3 px-4 py-2.5">
@@ -147,7 +148,117 @@ export function DesktopPhoneTab() {
           </div>
         )}
       </Card>
+
+      <LinkComputerCard />
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Desktop: link this computer to another one (it pairs like a phone does).
+
+function LinkComputerCard() {
+  const [s, setS] = useState<LinkStatus | null>(null)
+  const [address, setAddress] = useState('')
+  const [code, setCode] = useState('')
+  const [linking, setLinking] = useState(false)
+  useEffect(() => {
+    void api.sync.linkStatus().then(setS)
+    return onEvent((ev) => ev.type === 'link' && setS(ev.status))
+  }, [])
+  if (!s) return null
+
+  const link = async () => {
+    setLinking(true)
+    try {
+      const r = await api.sync.link({ address: address.trim(), code: code.trim() })
+      setS(r)
+      setCode('')
+      toast(`Linked with ${r.name}. Your libraries are merged and now stay in sync.`, 'good')
+      useStore.getState().bump()
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setLinking(false)
+    }
+  }
+
+  return (
+    <Card className="flex flex-col gap-4 lg:col-span-2">
+      <h3 className="flex items-center gap-2 text-lg font-semibold">
+        <Laptop className="size-5" /> Link to another computer
+      </h3>
+      {!s.linked ? (
+        <>
+          <p className="text-[0.92rem] text-muted">
+            Bring your courses, decks, notes and progress over from another computer, and keep both in sync from then on, with no file to export or copy. Course files (slides, transcripts) and pasted images are copied across too. Nothing on
+            either computer is replaced: the two libraries are merged, and after that a change on one shows up on the other.
+          </p>
+          <ol className="list-decimal space-y-1 pl-5 text-[0.92rem] text-muted">
+            <li>On the other computer, open Studywise → Settings → Devices.</li>
+            <li>Turn on syncing and press Pair a device.</li>
+            <li>Type the address and code it shows here.</li>
+          </ol>
+          <div className="grid gap-3 sm:grid-cols-[1fr_180px_auto] sm:items-end">
+            <Field label="Other computer’s address">
+              <Input autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="192.168.1.20:47821" value={address} onChange={(e) => setAddress(e.target.value)} />
+            </Field>
+            <Field label="Pairing code">
+              <Input
+                inputMode="numeric"
+                maxLength={6}
+                placeholder="123456"
+                className="tabular font-mono tracking-[0.2em]"
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                onKeyDown={(e) => e.key === 'Enter' && address.trim() && code.length === 6 && void link()}
+              />
+            </Field>
+            <Button variant="primary" loading={linking} disabled={!address.trim() || code.length !== 6} onClick={link}>
+              <Laptop className="size-4" /> Link
+            </Button>
+          </div>
+          <p className="text-[0.85rem] text-muted">Both computers need to be on the same network (or the same Tailscale network), with the same version of Studywise. The first sync can take a minute for a big library.</p>
+        </>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3 rounded-lg bg-surface-2 px-4 py-3 text-[0.92rem]">
+            {s.state === 'syncing' ? <Spinner className="size-4 text-accent" /> : s.state === 'error' ? <WifiOff className="size-4 text-warn" /> : <CheckCircle2 className="size-4 text-good" />}
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold">
+                {s.state === 'syncing' ? `Syncing with ${s.name}…` : s.state === 'error' ? `Can’t sync with ${s.name} right now` : `In sync with ${s.name}`}
+              </div>
+              <div className="text-muted">
+                <code className="font-mono">{s.address}</code> · Last synced {timeAgo(s.lastSync)}
+                {s.pending > 0 && s.state !== 'syncing' && ` · ${s.pending} ${s.pending === 1 ? 'change' : 'changes'} to send`}
+                {s.filesLeft > 0 && ` · ${s.filesLeft} ${s.filesLeft === 1 ? 'file' : 'files'} still to copy`}
+              </div>
+            </div>
+            <Button size="sm" variant="ghost" disabled={s.state === 'syncing'} onClick={async () => setS(await api.sync.linkNow())}>
+              <RefreshCw className="size-4" /> Sync now
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={async () => {
+                if (await confirmDialog(`Unlink from ${s.name}?`, 'Both computers keep everything they have, but changes stop going between them until you link again.', { confirmText: 'Unlink', danger: true }))
+                  setS(await api.sync.unlink())
+              }}
+            >
+              <Trash2 className="size-4" /> Unlink
+            </Button>
+          </div>
+          {s.error && (
+            <div className="flex items-start gap-2 text-[0.9rem] text-warn">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {s.error}
+            </div>
+          )}
+          <p className="text-[0.85rem] text-muted">
+            Syncs in the background while Studywise is open on both: a few seconds after a change, and every minute. Settings, prompts and API keys stay on each computer. Phones paired with this computer sync through it to {s.name} too.
+          </p>
+        </>
+      )}
+    </Card>
   )
 }
 
@@ -190,8 +301,8 @@ export function MobileSyncTab() {
           <Laptop className="size-5" /> Connect to your computer
         </h3>
         <ol className="list-decimal space-y-1 pl-5 text-[0.92rem] text-muted">
-          <li>On your computer, open Studywise → Settings → Phone.</li>
-          <li>Turn on syncing and press Pair a phone.</li>
+          <li>On your computer, open Studywise → Settings → Devices.</li>
+          <li>Turn on syncing and press Pair a device.</li>
           <li>Type the address and code it shows.</li>
         </ol>
         <Field label="Computer address">

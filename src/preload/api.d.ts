@@ -1,5 +1,5 @@
 import type { StudywiseApi } from '../main/ipc'
-import type { JobInfo, ClaudeStatus, UsageLimits } from '../shared/types'
+import type { JobInfo, ClaudeStatus, UsageLimits, LinkStatus } from '../shared/types'
 import type { UpdateStatus } from '../shared/update'
 
 export type StudywiseEvent =
@@ -12,8 +12,10 @@ export type StudywiseEvent =
   | { type: 'fullscreen'; on: boolean }
   | { type: 'usage'; usage: UsageLimits }
   | { type: 'update'; status: UpdateStatus }
-  /** A phone synced; `received` rows changed here. */
+  /** A phone or linked computer synced; `received` rows changed here. */
   | { type: 'sync'; received: number }
+  /** The link to another computer changed state (syncing, synced, can't reach it). */
+  | { type: 'link'; status: LinkStatus }
 
 declare global {
   interface Window {

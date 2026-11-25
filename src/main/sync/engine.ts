@@ -211,14 +211,20 @@ export interface SyncResult {
   received: number
 }
 
-/** Sends my changes the peer hasn't seen, then applies the peer's changes I haven't seen. */
-export async function syncWith(db: SqlDb, peerId: string, transport: SyncTransport): Promise<SyncResult> {
+/**
+ * Sends my changes the peer hasn't seen, then applies the peer's changes I haven't seen.
+ * relay: also send changes that came here from other devices (a computer linked
+ * to another computer passes on its own phones' changes); anything that came
+ * from the peer itself is still left out, and an echo of the peer's own row is
+ * ignored there because it isn't newer.
+ */
+export async function syncWith(db: SqlDb, peerId: string, transport: SyncTransport, opts: { relay?: boolean } = {}): Promise<SyncResult> {
   const me = deviceId(db)
   let peer = getPeer(db, peerId) ?? savePeer(db, { id: peerId })
   let sent = 0
   let received = 0
   for (;;) {
-    const page = changesSince(db, peer.sent_seq, { onlyOrigin: me })
+    const page = changesSince(db, peer.sent_seq, opts.relay ? { skipOrigin: peerId } : { onlyOrigin: me })
     if (page.changes.length) await transport.push(page.changes)
     sent += page.changes.length
     peer = savePeer(db, { id: peerId, sent_seq: page.next })

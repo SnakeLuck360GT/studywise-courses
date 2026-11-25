@@ -3,6 +3,8 @@ import { getDb, uid, now, json } from '../db'
 import * as repo from '../db/repo'
 import { runAI } from '../ai'
 import { defaultPreset } from '../ai/presets'
+import { isOffline } from '../offline'
+import { OFFLINE_SKIPPED_TYPES } from '@shared/offline'
 import { cardBlanks } from '@shared/blanks'
 import { shuffleOptions } from '@shared/course'
 import { markInCode, markFillBlankExact, fillBlankFromAi, verdictFor } from '@shared/marking'
@@ -120,8 +122,17 @@ export function planSession(cards: Card[], settings: LearnSettings, rand = Math.
   return plan
 }
 
+/** The deck's settings with the types offline mode can't ask turned off. */
+export function offlineSettings(settings: LearnSettings): LearnSettings {
+  const types = { ...settings.types }
+  for (const t of OFFLINE_SKIPPED_TYPES) types[t] = false
+  if (!QUESTION_TYPES.some((t) => types[t] !== false))
+    throw new Error('This deck only asks free-answer or sorting questions, which need AI. Turn on another question type in Learn settings, or turn off offline mode.')
+  return { ...settings, types }
+}
+
 export function startSession(deckId: string, cardIds?: string[]): { sessionId: string; total: number; settings: LearnSettings } {
-  const settings = settingsFor(deckId)
+  const settings = isOffline() ? offlineSettings(settingsFor(deckId)) : settingsFor(deckId)
   let cards = repo.listCards(deckId)
   if (cardIds?.length) cards = cards.filter((c) => cardIds.includes(c.id))
   if (cards.length === 0) throw new Error('This deck has no cards yet.')
@@ -269,10 +280,136 @@ async function categorizeFor(deckId: string, cards: Card[]): Promise<LearnQuesti
   return { id: uid(), type: 'categorize', card_id: cards[0].id, card_ids: cards.map((c) => c.id), payload: p.data, cached: false }
 }
 
+/** A question the AI made earlier, with its answers in new places. */
+function cachedQuestion(type: QuestionType, card: Card, raw: unknown): LearnQuestion | null {
+  if (!raw) return null
+  const p = QuestionPayloads[type].safeParse(raw)
+  if (!p.success) return null
+  // Answers go in new places every time a cached question comes back.
+  let payload: unknown = p.data
+  if (type === 'choice_blank') {
+    const cb = p.data as z.infer<typeof QuestionPayloads.choice_blank>
+    payload = { ...cb, choices: cb.choices.map((c) => shuffle(c)) }
+  } else if (type === 'multiple_choice') {
+    const mc = p.data as z.infer<typeof QuestionPayloads.multiple_choice>
+    const s = shuffleOptions(mc.options, mc.correct_index)
+    payload = { ...mc, options: s.options, correct_index: s.answer }
+  }
+  return { id: uid(), type, card_id: card.id, card_ids: [card.id], payload, cached: true } as LearnQuestion
+}
+
+// ---------- offline: questions made without AI ----------
+
+/** The newest question the AI made for this card and type, from any version of the prompt (the phone has none). */
+function anyCachedPayload(cardId: string, type: string): unknown | null {
+  try {
+    const r = getDb().prepare('SELECT payload FROM question_cache WHERE card_id = ? AND qtype = ? ORDER BY created_at DESC LIMIT 1').get(cardId, type) as { payload: string } | undefined
+    return r ? json(r.payload, null) : null
+  } catch {
+    return null
+  }
+}
+
+/** A card's answer as one plain line for an option: no bold, no images. */
+const plainAnswer = (s: string) =>
+  firstLine(s.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/!\[\[[^\]]*\]\]/g, '').replace(/\*\*/g, ''))
+    .replace(/\s+/g, ' ')
+    .slice(0, 220)
+    .trim()
+const sameText = (a: string, b: string) => a.trim().toLowerCase().replace(/\s+/g, ' ') === b.trim().toLowerCase().replace(/\s+/g, ' ')
+
+/** Up to n of `pool` that differ from `answer`, picked at random from the ones closest to it in length (so the right one doesn't stand out). */
+function distractors(answer: string, pool: string[], n: number, avoid: string[] = []): string[] {
+  const seen: string[] = []
+  for (const p of pool) if (p && !sameText(p, answer) && !avoid.some((a) => sameText(a, p)) && !seen.some((s) => sameText(s, p))) seen.push(p)
+  const near = seen.sort((x, y) => Math.abs(x.length - answer.length) - Math.abs(y.length - answer.length)).slice(0, Math.max(n * 3, 8))
+  return shuffle(near).slice(0, n)
+}
+
+/** Multiple choice from the card's own options, topped up with other cards' answers in the deck. */
+export function localMultipleChoice(card: Card, pool: Card[]): LearnQuestion | null {
+  const question = stripPoints(card.front) || card.front.trim()
+  if (!question) return null
+  const right = card.options.filter((o) => o.correct && o.text.trim())
+  const answer = right.length === 1 ? right[0].text.trim() : plainAnswer(card.back)
+  if (!answer) return null
+  const own = right.length === 1 ? shuffle(card.options.filter((o) => !o.correct && o.text.trim()).map((o) => o.text.trim())).slice(0, 3) : []
+  const others = pool.filter((c) => c.id !== card.id).map((c) => plainAnswer(c.back))
+  const wrong = [...own, ...distractors(answer, others, 3 - own.length, own)]
+  if (wrong.length < 3) return null
+  const s = shuffleOptions([answer, ...wrong], 0)
+  return { id: uid(), type: 'multiple_choice', card_id: card.id, card_ids: [card.id], payload: { question, options: s.options, correct_index: s.answer }, cached: false }
+}
+
+/** Choose-the-word blanks, with wrong choices taken from the other cards' blanks in the deck. */
+export function localChoiceBlank(card: Card, pool: Card[]): LearnQuestion | null {
+  const b = cardBlanks(card)
+  if (!b) return null
+  const words = pool.filter((c) => c.id !== card.id).flatMap((c) => cardBlanks(c)?.answers ?? [])
+  const choices = b.answers.map((ans) => shuffle([ans, ...distractors(ans, words, 3, b.answers)]))
+  if (choices.some((c) => c.length < 2)) return null
+  return {
+    id: uid(),
+    type: 'choice_blank',
+    card_id: card.id,
+    card_ids: [card.id],
+    payload: { prompt: b.source === 'bold' ? stripPoints(card.front) : '', segments: b.segments, answers: b.answers, choices },
+    cached: false
+  }
+}
+
+function localRead(card: Card): LearnQuestion {
+  return {
+    id: uid(),
+    type: 'read_understand',
+    card_id: card.id,
+    card_ids: [card.id],
+    payload: { title: stripPoints(card.front), explanation: card.back.trim() || card.front.trim() || '(empty card)' },
+    cached: false
+  }
+}
+
+/**
+ * Offline: every question is made here. Questions the AI made earlier are used
+ * when they're marked in code; otherwise multiple choice and choice blanks are
+ * built from the deck's own answers. Free answers and sorting are never asked
+ * (a session started online that has them gets one of these instead), and a
+ * card nothing fits is shown to read.
+ */
+function buildOffline(deckId: string, items: PlanItem[], cards: Map<string, Card>): LearnQuestion[] {
+  let pool: Card[] | null = null
+  const deck = () => (pool ??= repo.listCards(deckId))
+  return items
+    .map((item): LearnQuestion | null => {
+      const card = cards.get(item.card_id)
+      if (!card) return null
+      const group = item.card_ids.map((id) => cards.get(id)).filter((c): c is Card => !!c)
+      if (item.type === 'match_pairs') return matchPairsFor(group)
+      if (item.type === 'categorize') return group.length >= 2 ? matchPairsFor(group.slice(0, 6)) : localRead(card)
+      const fromCache = item.type === 'free_answer' || item.type === 'fill_blank' ? null : cachedQuestion(item.type, card, anyCachedPayload(card.id, item.type))
+      if (fromCache) return fromCache
+      const tries: (() => LearnQuestion | null)[] =
+        item.type === 'fill_blank'
+          ? [() => fillBlankFor(card)]
+          : item.type === 'choice_blank'
+            ? [() => localChoiceBlank(card, deck()), () => fillBlankFor(card)]
+            : item.type === 'read_understand'
+              ? []
+              : [() => localMultipleChoice(card, deck()), () => fillBlankFor(card)]
+      for (const t of tries) {
+        const q = t()
+        if (q) return q
+      }
+      return localRead(card)
+    })
+    .filter((q): q is LearnQuestion => !!q)
+}
+
 export async function buildQuestions(deckId: string, items: PlanItem[], opts: { noCache?: boolean } = {}): Promise<LearnQuestion[]> {
-  const preset = defaultPreset('make_questions')
   const allIds = [...new Set(items.flatMap((i) => i.card_ids))]
   const cards = new Map(repo.getCards(allIds).map((c) => [c.id, c]))
+  if (isOffline()) return buildOffline(deckId, items, cards)
+  const preset = defaultPreset('make_questions')
   const out = new Map<number, LearnQuestion>()
   const needAi: { idx: number; item: PlanItem; card: Card }[] = []
   const groupJobs: Promise<void>[] = []
@@ -302,25 +439,10 @@ export async function buildQuestions(deckId: string, items: PlanItem[], opts: { 
       return
     }
     if (!opts.noCache) {
-      const cached = cachedPayload(card.id, item.type, preset.id, preset.version)
+      const cached = cachedQuestion(item.type, card, cachedPayload(card.id, item.type, preset.id, preset.version))
       if (cached) {
-        const schema = QuestionPayloads[item.type]
-        const p = schema.safeParse(cached)
-        if (p.success) {
-          // Answers go in new places every time a cached question comes back.
-          const mc = p.data as z.infer<typeof QuestionPayloads.multiple_choice>
-          const payload =
-            item.type === 'choice_blank'
-              ? { ...(p.data as z.infer<typeof QuestionPayloads.choice_blank>), choices: (p.data as z.infer<typeof QuestionPayloads.choice_blank>).choices.map((c) => shuffle(c)) }
-              : item.type === 'multiple_choice'
-                ? (() => {
-                    const s = shuffleOptions(mc.options, mc.correct_index)
-                    return { ...mc, options: s.options, correct_index: s.answer }
-                  })()
-                : p.data
-          out.set(idx, { id: uid(), type: item.type, card_id: card.id, card_ids: [card.id], payload, cached: true } as LearnQuestion)
-          return
-        }
+        out.set(idx, cached)
+        return
       }
     }
     needAi.push({ idx, item, card })
@@ -355,7 +477,8 @@ export async function buildQuestions(deckId: string, items: PlanItem[], opts: { 
 }
 
 export async function regenerateQuestion(deckId: string, q: Pick<LearnQuestion, 'type' | 'card_id' | 'card_ids'>): Promise<LearnQuestion> {
-  getDb().prepare('DELETE FROM question_cache WHERE card_id = ? AND qtype = ?').run(q.card_id, q.type)
+  // Offline, the AI's question stays cached for later: this only makes another one here.
+  if (!isOffline()) getDb().prepare('DELETE FROM question_cache WHERE card_id = ? AND qtype = ?').run(q.card_id, q.type)
   const [nq] = await buildQuestions(deckId, [{ type: q.type, card_id: q.card_id, card_ids: q.card_ids }], { noCache: true })
   if (!nq) throw new Error('Could not regenerate this question')
   return nq
@@ -430,6 +553,7 @@ export async function markAnswer(deckId: string, q: LearnQuestion, a: LearnAnswe
   const card = repo.getCard(q.card_id)
   if (q.type === 'free_answer' && a.type === 'free_answer') {
     if (!a.text.trim()) return { score: 0, verdict: 'wrong', detail: { short_feedback: 'No answer given.' }, by: 'code' }
+    if (isOffline()) throw new Error('Written answers are marked by AI, so offline mode can’t mark this one. Skip it, or turn off offline mode.')
     const r = await runAI<FreeAnswerMark>({
       task: 'mark_free_answer',
       deckId,
@@ -453,6 +577,8 @@ export async function markAnswer(deckId: string, q: LearnQuestion, a: LearnAnswe
   if (q.type === 'fill_blank' && a.type === 'fill_blank') {
     const exact = markFillBlankExact(a.values, q.payload.answers)
     if (exact.mark) return exact.mark
+    // Offline only exact answers count; "I was right" is there for the ones that mean the same.
+    if (isOffline()) return { ...fillBlankFromAi(exact.blanks), by: 'code' }
     const r = await runAI<{ blanks: { correct: boolean }[] }>({
       task: 'mark_fill_blank',
       deckId,
@@ -588,6 +714,7 @@ export async function hintFor(cardId: string, q: LearnQuestion, index: number, p
   if (index > 1) throw new Error('No more hints for this question')
   const card = repo.getCard(cardId)
   if (card.hints[index]) return { hint: card.hints[index], source: 'card' }
+  if (isOffline()) throw new Error(index ? 'That’s the only hint this card has. Offline mode doesn’t ask the AI for more.' : 'This card has no hints. Offline mode doesn’t ask the AI for one.')
   const r = await runAI<{ hint: string }>({
     task: 'hint',
     deckId: card.deck_id,

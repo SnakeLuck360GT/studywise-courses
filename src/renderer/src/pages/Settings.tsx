@@ -29,7 +29,8 @@ import {
   Archive,
   Smartphone,
   Laptop,
-  Store
+  Store,
+  WifiOff
 } from 'lucide-react'
 import type { UpdateStatus } from '@shared/update'
 import type { Preset, PresetVersion, CustomAction, ModelChoice, AiCall, Thresholds, AiProvider, OllamaModel } from '@shared/types'
@@ -56,7 +57,7 @@ const DESKTOP_TABS = [
   { id: 'prompts', label: 'Prompts', icon: Sparkles },
   { id: 'actions', label: 'Custom actions', icon: Wand2 },
   { id: 'usage', label: 'AI usage', icon: Activity },
-  { id: 'phone', label: 'Phone', icon: Smartphone },
+  { id: 'phone', label: 'Devices', icon: Smartphone },
   { id: 'market', label: 'Marketplace', icon: Store },
   { id: 'jobs', label: 'Jobs', icon: ListChecks }
 ] as const
@@ -122,6 +123,26 @@ export function Settings({ tab = 'general' }: { tab?: string }) {
 
 // ---------------------------------------------------------------------------
 
+/** Offline mode: study with no AI at all (per device, so it doesn't sync). */
+function OfflineCard() {
+  const offline = useStore((s) => s.offline)
+  const setOffline = useStore((s) => s.setOffline)
+  return (
+    <Card className={cx('flex flex-col gap-3 lg:col-span-2', offline && 'ring-1 ring-warn/40')}>
+      <div className="flex items-center gap-2">
+        <WifiOff className={cx('size-5', offline ? 'text-warn' : 'text-muted')} />
+        <h3 className="text-lg font-semibold">Offline mode</h3>
+      </div>
+      <Toggle checked={offline} onChange={(v) => setOffline(v)} label="Study without AI" />
+      <p className="text-[0.88rem] text-muted">
+        Nothing calls the AI, so it works with no internet, no Claude login and no computer nearby. Learn asks multiple choice, true or false, matching and fill-in-the-blank questions, using ones the AI made
+        before or building them from your cards, and marks them on this device. Free-answer questions and a topic’s written answers are skipped, since only AI can mark them. A blank only counts when it matches exactly; press “I was right” when yours means the same.
+        Explain, feedback, generating and writing topics come back when you turn it off. It’s set on each device separately.
+      </p>
+    </Card>
+  )
+}
+
 function General() {
   const [s, setS] = useState<Record<string, unknown>>({})
   const [info, setInfo] = useState<Awaited<ReturnType<typeof api.app.info>> | null>(null)
@@ -136,6 +157,7 @@ function General() {
   const th = (s.thresholds as Thresholds) ?? DEFAULT_THRESHOLDS
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      <OfflineCard />
       <Card className="flex flex-col gap-4">
         <h3 className="text-lg font-semibold">Appearance</h3>
         <Field label="Theme">

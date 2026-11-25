@@ -15,6 +15,8 @@ import * as course from '../main/services/course'
 import * as learn from '../main/services/learn'
 import * as phone from './phoneSync'
 import { idb } from './idb'
+import { isOffline, OfflineError } from '../main/offline'
+import type { LearnAnswer, LearnQuestion } from '@shared/questions'
 
 type Fn = (input: never) => unknown
 type In = Record<string, never>
@@ -153,7 +155,48 @@ const NEEDS: Record<string, string> = {
   'app.restore': 'Restore from Studywise on your computer.'
 }
 
+/**
+ * Offline mode on the phone: Learn runs here on the phone's copy (offline
+ * questions are made and marked without AI), so it works with no computer.
+ */
+const offlineLocal: Record<string, Fn> = {
+  'learn.start': (i: { deckId: string; cardIds?: string[] }) => learn.startSession(i.deckId, i.cardIds),
+  'learn.batch': (i: { sessionId: string; batch: number }) => learn.getBatch(i.sessionId, i.batch),
+  'learn.submit': (i: { sessionId: string | null; deckId: string; question: LearnQuestion; answer: LearnAnswer; retry?: boolean }) =>
+    learn.submitAnswer(i.sessionId, i.deckId, i.question, i.answer, i.retry),
+  'learn.override': (i: { attemptId: string }) => learn.overrideAttempt(i.attemptId),
+  'learn.undoOverride': (i: { attemptId: string }) => learn.undoOverride(i.attemptId),
+  'learn.hint': (i: { cardId: string; question: LearnQuestion; index: number; previous: string[] }) => learn.hintFor(i.cardId, i.question, i.index, i.previous),
+  'learn.regenerate': (i: { deckId: string; question: LearnQuestion }) => learn.regenerateQuestion(i.deckId, i.question),
+  'learn.end': (i: { sessionId: string }) => learn.endSession(i.sessionId)
+}
+
+/** Requests that would have the computer call the AI; offline they stop here. */
+const AI_CHANNELS = new Set([
+  'notes.ai',
+  'notes.quiz',
+  'gen.notes',
+  'gen.cards',
+  'gen.fixCard',
+  'courses.plan',
+  'courses.addNotes',
+  'courses.write',
+  'courses.mark',
+  'courses.suggestTrim',
+  'learn.feedback',
+  'explain.run',
+  'explain.chat',
+  'actions.run',
+  'presets.testRun',
+  'models.test'
+])
+
 async function call(channel: string, input: unknown): Promise<unknown> {
+  if (isOffline()) {
+    const off = offlineLocal[channel]
+    if (off) return await (off as (i: unknown) => unknown)(input)
+    if (AI_CHANNELS.has(channel)) throw new OfflineError()
+  }
   const fn = local[channel]
   if (fn) return await (fn as (i: unknown) => unknown)(input)
   for (const [prefix, msg] of Object.entries(NEEDS)) if (channel.startsWith(prefix)) throw new Error(msg)

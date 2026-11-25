@@ -11,6 +11,7 @@ import { aiQueue } from './ai'
 import { detectClaude, setOverridePath } from './ai/claudePath'
 import { registerIpc, broadcast, setAfterCall, refreshPlanUsage, runHandler } from './ipc'
 import { configureSyncServer, startSyncServer, stopSyncServer } from './sync/server'
+import { configureLink, startLinkSync, stopLinkSync } from './sync/link'
 import { buildMenu } from './menu'
 import { loadWindowState, trackWindowState } from './windowState'
 import { onJobEvent, runningJobCount, setUsageProbe } from './jobs'
@@ -284,6 +285,17 @@ app.whenReady().then(async () => {
   })
   if (repo.getSetting<boolean>('sync.enabled', false)) void startSyncServer()
   app.on('before-quit', () => void stopSyncServer())
+
+  // Linked to another computer: sync with it in the background.
+  configureLink({
+    onStatus: (status) => broadcast({ type: 'link', status }),
+    onReceived: (received) => {
+      broadcast({ type: 'sync', received })
+      updateBadge()
+    }
+  })
+  startLinkSync()
+  app.on('before-quit', () => stopLinkSync())
 
   onJobEvent((ev) => {
     if (ev.type === 'delta') {

@@ -1,4 +1,5 @@
-// The desktop end of phone sync: a small HTTP server on the local network.
+// The desktop end of sync: a small HTTP server on the local network that
+// phones, and other computers linked to this one, sync with.
 //
 //   GET  /hello            who this is (no auth)
 //   POST /pair             { code, deviceId, name } → { token, desktopId, desktopName }
@@ -7,20 +8,24 @@
 //   POST /rpc              { channel, input }     → { ok, data | error }   (AI and other desktop-only work)
 //   GET  /events?since=n   long poll for app events (streamed AI text, job progress)
 //   GET  /file?u=…         an attachment or figure, by its studywise-file:// URL
-//   PUT  /file?u=…         an attachment pasted on the phone
+//   PUT  /file?u=…         an attachment pasted on the phone or the other computer
+//   POST /have             { attachments, courseFiles } → the ones this computer is missing
+//   GET  /course-file?id=  a course file's bytes (for a linked computer)
+//   PUT  /course-file?id=  a course file added on a linked computer
 //
-// Everything but /hello and /pair needs the token the phone got when pairing.
-// It's off until turned on in Settings → Phone.
+// Everything but /hello and /pair needs the token the device got when pairing.
+// It's off until turned on in Settings → Devices.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createHash, randomBytes, randomInt } from 'node:crypto'
 import { hostname, networkInterfaces } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { extname, join, normalize, sep } from 'node:path'
+import { dirname, extname, join, normalize, sep } from 'node:path'
 import { getDb } from '../db'
 import * as repo from '../db/repo'
 import { paths } from '../paths'
 import { applyChanges, changesSince, deviceId, ensureBackfill, getPeer, listPeers, removePeer, savePeer, type SqlDb } from './engine'
+import { attachmentPath, courseFileOnDisk, localizeCoursePaths } from './files'
 import type { SyncDevice, SyncStatus } from '@shared/types'
 
 export const DEFAULT_PORT = 47821
@@ -57,7 +62,14 @@ const BLOCKED = new Set([
   'io.importNotes',
   'io.exportLibrary',
   'io.importLibrary',
-  'io.exportNote'
+  'io.exportNote',
+  // Pairing and linking are only set up on the computer itself.
+  'sync.setEnabled',
+  'sync.pairCode',
+  'sync.unpair',
+  'sync.link',
+  'sync.unlink',
+  'sync.linkNow'
 ])
 
 type RpcRunner = (channel: string, input: unknown, stream: (streamId: string, text: string) => void) => Promise<{ ok: boolean; data?: unknown; error?: string }>
@@ -87,7 +99,7 @@ export function configureSyncServer(opts: { rpc: RpcRunner; onSynced: (received:
 /** Called for every event the desktop window gets, so phones can follow along. */
 export function recordEvent(ev: unknown): void {
   const type = (ev as { type?: string })?.type
-  if (!type || ['menu', 'open-files', 'fullscreen', 'update'].includes(type)) return
+  if (!type || ['menu', 'open-files', 'fullscreen', 'update', 'link'].includes(type)) return
   events.push({ n: ++eventN, ev })
   if (events.length > 600) events.splice(0, events.length - 600)
   for (const w of waiting) w()
@@ -233,13 +245,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
     if (route === 'POST /pair') {
       const b = await readJson<{ code?: string; deviceId?: string; name?: string }>(req)
-      if (!pairing || pairing.expires < Date.now()) return send(res, 403, { error: 'Pairing isn’t open. On your computer, open Settings → Phone and press Pair a phone.' })
+      if (!pairing || pairing.expires < Date.now()) return send(res, 403, { error: 'Pairing isn’t open. On that computer, open Settings → Devices and press Pair a device.' })
       if (String(b.code ?? '').trim() !== pairing.code || !b.deviceId) {
         if (++pairing.misses >= MAX_MISSES) {
           pairing = null
-          return send(res, 403, { error: 'Too many wrong codes. On your computer, press Pair a phone again for a new one.' })
+          return send(res, 403, { error: 'Too many wrong codes. On that computer, press Pair a device again for a new one.' })
         }
-        return send(res, 403, { error: 'That code doesn’t match. Check the code on your computer.' })
+        return send(res, 403, { error: 'That code doesn’t match. Check the code on the computer you’re pairing with.' })
       }
       const token = randomBytes(32).toString('base64url')
       savePeer(db(), { id: b.deviceId, name: String(b.name || 'Phone').slice(0, 80), token_hash: sha(token), address: req.socket.remoteAddress?.replace(/^::ffff:/, '') ?? null })
@@ -249,13 +261,48 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
 
     const peer = authed(req)
-    if (!peer) return send(res, 401, { error: 'This phone isn’t paired with this computer any more. Pair it again.' })
+    if (!peer) return send(res, 401, { error: 'This device isn’t paired with this computer any more. Pair it again.' })
 
     if (route === 'POST /push') {
       const b = await readJson<{ changes: Parameters<typeof applyChanges>[1] }>(req)
       const r = applyChanges(db(), b.changes ?? [])
-      if (r.applied) onSynced?.(r.applied)
+      if (r.applied) {
+        // Course files added on a linked computer arrive with its folders in their paths.
+        localizeCoursePaths(db())
+        onSynced?.(r.applied)
+      }
       return send(res, 200, r)
+    }
+    if (route === 'POST /have') {
+      const b = await readJson<{ attachments?: unknown[]; courseFiles?: unknown[] }>(req)
+      const attachments = (b.attachments ?? []).map(String).filter((n) => {
+        const p = attachmentPath(n)
+        return !!p && !existsSync(p)
+      })
+      const courseFiles = (b.courseFiles ?? []).map(String).filter((id) => {
+        const p = courseFileOnDisk(db(), id)
+        return !!p && !existsSync(p)
+      })
+      return send(res, 200, { attachments, courseFiles })
+    }
+    if (url.pathname === '/course-file') {
+      const file = courseFileOnDisk(db(), url.searchParams.get('id') ?? '')
+      if (!file) return send(res, 404, { error: 'Not found' })
+      if (req.method === 'GET') {
+        if (!existsSync(file)) return send(res, 404, { error: 'Not found' })
+        const data = readFileSync(file)
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': data.length, ...CORS })
+        return void res.end(data)
+      }
+      if (req.method === 'PUT') {
+        const raw = await readBody(req)
+        const data = /json/.test(req.headers['content-type'] ?? '') ? Buffer.from(String((JSON.parse(raw.toString('utf8')) as { data?: string }).data ?? ''), 'base64') : raw
+        if (!existsSync(file)) {
+          mkdirSync(dirname(file), { recursive: true })
+          writeFileSync(file, data)
+        }
+        return send(res, 200, { ok: true })
+      }
     }
     if (route === 'POST /pull') {
       const b = await readJson<{ since?: number }>(req)

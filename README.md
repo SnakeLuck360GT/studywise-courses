@@ -48,7 +48,11 @@ Build it (needs Android Studio, or the Android SDK and a JDK 17–21):
 npm run android:apk    # release/Studywise-android.apk
 ```
 
-Install the APK on your phone (allow installing from unknown sources), then pair it: on the computer open Settings → Phone, turn on syncing and press Pair a phone; on the phone open Settings → Sync and type the address and code it shows. Both need to be on the same network (or the same Tailscale network).
+Install the APK on your phone (allow installing from unknown sources), then pair it: on the computer open Settings → Devices, turn on syncing and press Pair a device; on the phone open Settings → Sync and type the address and code it shows. Both need to be on the same network (or the same Tailscale network).
+
+To move your library to another computer (and keep the two in sync), do the same on the computer that has it, then on the new one open Settings → Devices → Link to another computer and type the address and code. No file to copy.
+
+To study without AI (no internet, no Claude login), turn on **Offline** at the top of the window: Learn and course topics then only ask questions that are marked without AI.
 
 `npm run android:run` builds and runs it on a connected phone or emulator. To work on the phone layout in a browser, run `npm run sync:demo` (a desktop backend with a demo library and mock AI that prints a pairing code) and `npm run mobile:dev`, then open http://localhost:5199 at phone size.
 

@@ -54,6 +54,7 @@ export const COMMANDS: Command[] = [
   { id: 'view.explain', label: 'Toggle Explain Panel', accelerator: 'Alt+CmdOrCtrl+E', menu: 'View', group: 'View' },
   { id: 'view.preview', label: 'Toggle Note Preview', accelerator: 'Shift+CmdOrCtrl+P', menu: 'View', group: 'Notes', scope: 'note' },
   { id: 'view.focus', label: 'Focus Mode', accelerator: 'Shift+CmdOrCtrl+F', menu: 'View', group: 'View' },
+  { id: 'view.offline', label: 'Offline Mode (No AI)', menu: 'View', group: 'View' },
   { id: 'view.theme', label: 'Cycle Theme (System / Light / Dark)', accelerator: 'Shift+CmdOrCtrl+L', menu: 'View', group: 'View' },
   { id: 'view.zoomIn', label: 'Larger Text', accelerator: 'CmdOrCtrl+=', menu: 'View', group: 'View', separatorBefore: true },
   { id: 'view.zoomOut', label: 'Smaller Text', accelerator: 'CmdOrCtrl+-', menu: 'View', group: 'View' },

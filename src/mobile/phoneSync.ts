@@ -78,7 +78,7 @@ function deviceName(): string {
 }
 
 export async function pair(address: string, code: string): Promise<PhoneSyncStatus> {
-  if (!address) throw new Error('Type your computer’s address, shown in Studywise → Settings → Phone.')
+  if (!address) throw new Error('Type your computer’s address, shown in Studywise → Settings → Devices.')
   const c = new SyncClient(baseUrl(address), http)
   const hello = await c.hello()
   if (hello.app !== 'studywise') throw new Error('That address isn’t Studywise.')

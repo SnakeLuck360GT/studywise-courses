@@ -5,6 +5,7 @@ import { useStore, type Route } from '../lib/store'
 import { cx, Kbd } from './ui'
 import { runCommand } from '../lib/commands'
 import { UsageMeter } from './UsageMeter'
+import { OfflineButton } from './Offline'
 
 // Top navigation. Hovering a link sends three soft blobs after it at slightly
 // different speeds; an SVG goo filter (in index.html) melts them together.
@@ -179,6 +180,7 @@ export function GooNav() {
         <div className="flex-1" />
 
         <div ref={toolsRef} className="flex shrink-0 items-center gap-3">
+        <OfflineButton />
         <UsageMeter />
         <button
           onClick={() => runCommand('palette')}

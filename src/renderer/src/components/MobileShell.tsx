@@ -7,6 +7,7 @@ import { useStore, type Route } from '../lib/store'
 import { mobile } from '../lib/platform'
 import { cx, Button } from './ui'
 import { Logo } from './GooNav'
+import { OfflineButton } from './Offline'
 import { usePhoneSync, MobileSyncTab } from './PhoneSync'
 import { api } from '../lib/api'
 
@@ -55,6 +56,7 @@ export function MobileTopBar() {
         )}
         {/* Pages show their own title; the bar names the app on the home page only. */}
         <div className="min-w-0 flex-1 truncate text-[1.02rem] font-semibold tracking-[-0.01em]">{route.name === 'home' ? 'Studywise' : back ? '' : TITLES[route.name]}</div>
+        <OfflineButton mobile />
         {sync && <SyncChip />}
       </div>
     </header>

@@ -87,6 +87,28 @@ export class SyncClient {
     return res.status === 200 ? res.bytes() : null
   }
 
+  /** Which of these files the other computer doesn't have yet (pasted images by name, course files by id). */
+  have(attachments: string[], courseFiles: string[]): Promise<{ attachments: string[]; courseFiles: string[] }> {
+    return this.call('POST', '/have', { attachments, courseFiles }, 60_000)
+  }
+
+  /** A course file's bytes (a computer linked to another copies the slides and transcripts its courses were made from). */
+  async getCourseFile(id: string): Promise<Uint8Array | null> {
+    const res = await this.http({ method: 'GET', url: `${this.base}/course-file?id=${encodeURIComponent(id)}`, headers: this.token ? { Authorization: `Bearer ${this.token}` } : {}, timeoutMs: 10 * 60_000 })
+    return res.status === 200 ? res.bytes() : null
+  }
+
+  async putCourseFile(id: string, data: Uint8Array): Promise<boolean> {
+    const res = await this.http({
+      method: 'PUT',
+      url: `${this.base}/course-file?id=${encodeURIComponent(id)}`,
+      headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
+      body: JSON.stringify({ data: toBase64(data) }),
+      timeoutMs: 10 * 60_000
+    })
+    return res.status === 200
+  }
+
   /** Sent as base64 in JSON, which every HTTP layer (including Capacitor's native one) handles the same way. */
   async putFile(url: string, data: Uint8Array): Promise<boolean> {
     const res = await this.http({

@@ -58,20 +58,22 @@ interface Slot {
 const emptySlot = (): Slot => ({ answer: null, mark: null, marking: false, hint: 0, correction: '', overridden: false })
 
 /** Learning: each section's notes, flashcards and questions. The test (the topic's check questions) is separate, started from the course page. */
-function buildSteps(t: Topic, test: boolean): Step[] {
+function buildSteps(t: Topic, test: boolean, offline = false): Step[] {
   const c = t.content!
   const steps: Step[] = []
+  // Offline leaves out written answers (only AI can mark them); the rest keep their numbers, so your place still resumes.
+  const ask = (q: CourseQuestion) => !(offline && q.type === 'explain')
   // Answers go in new places every time you do the topic or the test again.
   if (test) {
     steps.push({ kind: 'check_intro' })
-    shuffleMcqs(c.check).forEach((q, j) => steps.push({ kind: 'q', section: -1, index: j, q }))
+    shuffleMcqs(c.check).forEach((q, j) => ask(q) && steps.push({ kind: 'q', section: -1, index: j, q }))
     steps.push({ kind: 'summary' })
     return steps
   }
   c.sections.forEach((s, i) => {
     steps.push({ kind: 'notes', section: i })
     if (s.cards?.length) steps.push({ kind: 'cards', section: i })
-    shuffleMcqs(s.questions).forEach((q, j) => steps.push({ kind: 'q', section: i, index: j, q }))
+    shuffleMcqs(s.questions).forEach((q, j) => ask(q) && steps.push({ kind: 'q', section: i, index: j, q }))
     // Never two recall cards in a row: there's always a section between them.
     if (i < c.sections.length - 1 && Math.random() < RECALL_CHANCE) steps.push({ kind: 'recall', after: i })
   })
@@ -119,6 +121,7 @@ const sessions = new Map<string, TopicSession>()
 export function TopicPage({ id, section, test = false }: { id: string; section?: number; test?: boolean }) {
   const go = useStore((s) => s.go)
   const openExplain = useStore((s) => s.openExplain)
+  const offline = useStore((s) => s.offline)
   const [topic, setTopic] = useState<Topic | null>(null)
   const [siblings, setSiblings] = useState<Topic[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -141,8 +144,11 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
         if (!alive) return
         if (!t.content) throw new Error('This topic hasn’t been written yet.')
         if (test && !t.content.check.length) throw new Error('This topic has no test questions. Write it again to get some.')
+        if (test && offline && t.content.check.every((q) => q.type === 'explain'))
+          throw new Error('This topic’s test is all written answers, which only AI can mark. Turn off offline mode to take it.')
         const p = t.progress
-        contentKey.current = JSON.stringify(t.content)
+        // A session kept from before offline mode changed has the wrong questions in it, so it starts fresh from your saved place.
+        contentKey.current = `${offline ? 'offline:' : ''}${JSON.stringify(t.content)}`
         // Carry on exactly where you were, unless you picked a section, the topic was
         // rewritten, or its progress was reset since.
         const kept = sessions.get(sessionKey)
@@ -163,7 +169,7 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
         sessions.delete(sessionKey)
         cards.current = {}
         run.current = Math.random().toString(36).slice(2, 8)
-        const s = buildSteps(t, test)
+        const s = buildSteps(t, test, offline)
         // Open at the section picked on the week page, or resume where you left off; a
         // finished topic starts over. A test always starts at the beginning.
         let start = 0
@@ -187,7 +193,7 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
     return () => {
       alive = false
     }
-  }, [id, section, test])
+  }, [id, section, test, offline])
 
   // Keep the session up to date as you go; a finished one is let go, so Again starts over.
   useEffect(() => {
@@ -352,7 +358,8 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
   const content = topic.content
   const sectionCount = content.sections.length
   const curSection = step.kind === 'notes' || step.kind === 'cards' || step.kind === 'q' ? step.section : step.kind === 'recall' ? step.after : sectionCount
-  const qCount = content.check.length
+  // Test questions being asked (offline leaves out written answers).
+  const qCount = test ? steps.filter((s) => s.kind === 'q' && s.section === -1 && !s.retry).length : content.check.length
   const qDone = steps.slice(0, at).filter((s) => s.kind === 'q' && s.section === -1 && !s.retry).length
   const idx = siblings.findIndex((t) => t.id === topic.id)
   const nextTopic = siblings.slice(idx + 1).find((t) => t.status === 'ready' && !t.progress.done)
@@ -401,7 +408,7 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
           </div>
           <div className="flex gap-1">
             {test
-              ? content.check.map((_, i) => (
+              ? Array.from({ length: qCount }, (_, i) => (
                   <div key={i} className={cx('h-2 flex-1 rounded-full transition-colors duration-500', i < qDone || step.kind === 'summary' ? 'bg-good' : i === qDone && step.kind === 'q' ? 'bg-accent' : 'bg-surface-2')} />
                 ))
               : content.sections.map((_, i) => (
@@ -412,9 +419,11 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
         {/* A test is from memory: no notes, and nothing to rewrite mid-test. */}
         {!test && (
           <>
-            <Button variant="ghost" size="icon" className="desktop-only" onClick={() => setRewriteOpen(true)} title="Rewrite this topic">
-              <RefreshCw className="size-5" />
-            </Button>
+            {!offline && (
+              <Button variant="ghost" size="icon" className="desktop-only" onClick={() => setRewriteOpen(true)} title="Rewrite this topic">
+                <RefreshCw className="size-5" />
+              </Button>
+            )}
             <Button variant="ghost" size="icon" onClick={() => setNotesOpen(true)} title="All notes so far">
               <BookOpen className="size-5" />
             </Button>
@@ -423,7 +432,7 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
       </div>
 
       <div className={cx('mx-auto w-full max-w-[860px] flex-1', IS_MOBILE ? 'mt-4' : 'mt-7')}>
-        {step.kind === 'notes' && <NotesStep key={at} section={content.sections[step.section]} first={step.section === 0} goal={content.goal} onNext={next} onAsk={() => askAbout(content.sections[step.section])} />}
+        {step.kind === 'notes' && <NotesStep key={at} section={content.sections[step.section]} first={step.section === 0} goal={content.goal} onNext={next} onAsk={offline ? null : () => askAbout(content.sections[step.section])} />}
 
         {step.kind === 'cards' && (
           <CardsStep
@@ -448,7 +457,8 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
             <Brain className="size-8 text-accent" strokeWidth={1.6} />
             <h2 className="text-[clamp(1.4rem,2.6vw,1.9rem)] leading-tight font-semibold tracking-tight">Topic test</h2>
             <p className="text-muted">
-              {content.check.length} questions across the whole topic, a bit harder than the ones while you learn it. No notes this time. Only your first try at each counts towards your score.
+              {qCount} questions across the whole topic, a bit harder than the ones while you learn it. No notes this time. Only your first try at each counts towards your score.
+              {offline && qCount < content.check.length && ` Offline mode leaves out ${content.check.length - qCount} written ${content.check.length - qCount === 1 ? 'answer' : 'answers'}, since only AI can mark them.`}
             </p>
             <Button variant="primary" size="lg" onClick={next}>
               Start the test <Kbd className="ml-1 border-current/30">↩</Kbd>
@@ -471,9 +481,11 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
                   <Lightbulb className="size-4" /> {shownHints === 0 ? 'Hint' : shownHints < hints.length ? `Another hint (${shownHints + 1} of ${hints.length})` : 'No more hints'}
                 </Button>
               )}
-              <Button size="sm" variant="ghost" onClick={explain} title="Explain">
-                Explain
-              </Button>
+              {!offline && (
+                <Button size="sm" variant="ghost" onClick={explain} title="Explain">
+                  Explain
+                </Button>
+              )}
             </div>
             {shownHints > 0 && !slot.mark && (
               <div className="pop-in mb-4 flex flex-col gap-1.5 rounded-lg bg-warn-soft px-4 py-2.5 text-[0.95rem]">
@@ -648,7 +660,7 @@ function RewriteDialog({ level, levels, section, onClose, onRewrite }: { level: 
   )
 }
 
-function NotesStep({ section, first, goal, onNext, onAsk }: { section: TopicSection; first: boolean; goal: string; onNext: () => void; onAsk: () => void }) {
+function NotesStep({ section, first, goal, onNext, onAsk }: { section: TopicSection; first: boolean; goal: string; onNext: () => void; onAsk: (() => void) | null }) {
   const [img, setImg] = useState<string | null>(null)
   const [imgErr, setImgErr] = useState(false)
   const [zoom, setZoom] = useState(false)
@@ -687,9 +699,11 @@ function NotesStep({ section, first, goal, onNext, onAsk }: { section: TopicSect
         <Button variant="primary" size="lg" onClick={onNext}>
           Got it <ArrowRight className="size-4" /> <Kbd className="ml-1 border-current/30">↩</Kbd>
         </Button>
-        <Button variant="ghost" size="lg" onClick={onAsk} title="Ask about this section">
-          <HelpCircle className="size-4" /> I don’t get this
-        </Button>
+        {onAsk && (
+          <Button variant="ghost" size="lg" onClick={onAsk} title="Ask about this section">
+            <HelpCircle className="size-4" /> I don’t get this
+          </Button>
+        )}
       </div>
       {zoom && img && (
         <Modal open onClose={() => setZoom(false)} full>
@@ -754,6 +768,7 @@ function CardsStep({
   const [rated, setRated] = useState<CardRating | null>(null)
   const [explanation, setExplanation] = useState<string | null>(null)
   const [explaining, setExplaining] = useState(false)
+  const offline = useStore((s) => s.offline)
   /** After a miss: the card with your choices, the section's notes, or the AI explanation. */
   const [view, setView] = useState<'card' | 'notes' | 'ai'>('card')
   const idx = queue[0]
@@ -822,7 +837,7 @@ function CardsStep({
       } else if (revealed && !rated && ['1', '2', '3'].includes(e.key)) rate(Number(e.key) as CardRating)
       else if (e.key === 'b' || e.key === 'B') goBack()
       else if (rated && (e.key === 'n' || e.key === 'N')) setView('notes')
-      else if (rated && (e.key === 'e' || e.key === 'E')) void explain(rated)
+      else if (rated && !offline && (e.key === 'e' || e.key === 'E')) void explain(rated)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -844,7 +859,7 @@ function CardsStep({
       {label} <ArrowRight className="size-4" /> <Kbd className="ml-1 border-current/30">↩</Kbd>
     </Button>
   )
-  const aiButton = (
+  const aiButton = offline ? null : (
     <Button variant="ghost" size="lg" onClick={() => rated && void explain(rated)}>
       <Sparkles className="size-4" /> Explain it with AI <Kbd className="ml-1">E</Kbd>
     </Button>

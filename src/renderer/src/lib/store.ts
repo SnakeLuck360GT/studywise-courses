@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import type { AiStatus, ClaudeStatus, JobInfo } from '@shared/types'
 import type { ExplainOpen } from '../components/ExplainPanel'
 import type { PreviewCardT } from '../components/GenerateCards'
+import { OFFLINE_SETTING } from '@shared/offline'
+import { api } from './api'
 
 export type Route =
   | { name: 'home' }
@@ -92,7 +94,13 @@ interface State {
   /** Bumped when data changes elsewhere, so pages refetch. */
   version: number
   bump: () => void
+
+  /** Offline mode: nothing uses AI, and studying only asks questions marked without it (per device). */
+  offline: boolean
+  setOffline: (on: boolean, opts?: { save?: boolean; quiet?: boolean }) => void
 }
+
+const OFFLINE_HINT = 'Offline mode is on, so AI features are off. Turn it off with Offline at the top.'
 
 let toastSeq = 0
 
@@ -179,12 +187,13 @@ export const useStore = create<State>((set, get) => ({
   },
 
   explain: null,
-  openExplain: (e) => set({ explain: e }),
+  // Explain and the generators are all AI, so offline they say so instead of opening.
+  openExplain: (e) => (e && get().offline ? void get().toast(OFFLINE_HINT) : set({ explain: e })),
 
   genCards: null,
-  openGenCards: (p) => set({ genCards: p }),
+  openGenCards: (p) => (p && get().offline ? void get().toast(OFFLINE_HINT) : set({ genCards: p })),
   genNotes: null,
-  openGenNotes: (p) => set({ genNotes: p }),
+  openGenNotes: (p) => (p && get().offline ? void get().toast(OFFLINE_HINT) : set({ genNotes: p })),
   preview: null,
   openPreview: (p) => set({ preview: p }),
 
@@ -202,7 +211,15 @@ export const useStore = create<State>((set, get) => ({
   dropFiles: null,
   setDropFiles: (f) => set({ dropFiles: f }),
   version: 0,
-  bump: () => set({ version: get().version + 1 })
+  bump: () => set({ version: get().version + 1 }),
+
+  offline: false,
+  setOffline: (on, opts = {}) => {
+    set({ offline: on, ...(on ? { explain: null, genCards: null, genNotes: null } : {}) })
+    if (opts.save !== false) void api.settings.set({ key: OFFLINE_SETTING, value: on })
+    if (!opts.quiet) get().toast(on ? 'Offline mode on. Studying only asks questions that don’t need AI.' : 'Offline mode off. AI features are back.', 'good')
+    get().bump()
+  }
 }))
 
 export const toast = (text: string, kind?: Toast['kind'], action?: Toast['action']): number => useStore.getState().toast(text, kind, action)

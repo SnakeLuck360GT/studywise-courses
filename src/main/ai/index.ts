@@ -12,6 +12,7 @@ import { runOllama } from './ollama'
 import { Semaphore } from './queue'
 import { mockResponse, mockStream, mockLive } from './mock'
 import { logAiCall, getDeck, getSetting, courseNoteForDeck } from '../db/repo'
+import { isOffline, OfflineError } from '../offline'
 
 export { CliError }
 export type { AiLiveEvent }
@@ -132,6 +133,8 @@ function timeoutFor(task: TaskId): number {
 }
 
 export async function runAI<T = unknown>(opts: RunAIOptions): Promise<RunAIResult<T>> {
+  // One gate for every AI call: offline mode means none at all.
+  if (isOffline()) throw new OfflineError()
   const r = renderPrompt(opts)
   const sendPrompt = opts.rawPrompt ?? r.prompt
   const timeoutMs = opts.timeoutMs ?? timeoutFor(opts.task)

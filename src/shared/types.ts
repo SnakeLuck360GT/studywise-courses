@@ -320,6 +320,21 @@ export interface SyncStatus {
   error: string | null
 }
 
+/** This computer's link to another computer it syncs with (Settings → Devices → Link to another computer). */
+export interface LinkStatus {
+  linked: boolean
+  /** The other computer's name and address. */
+  name: string | null
+  address: string | null
+  lastSync: string | null
+  state: 'idle' | 'syncing' | 'error'
+  error: string | null
+  /** Changes made here that haven't gone to the other computer yet. */
+  pending: number
+  /** Files (course files, pasted images) still to copy across; set after each sync. */
+  filesLeft: number
+}
+
 /** What the home page shows about your studying (see repo.homeStats). */
 export interface HomeStats {
   /** Seconds studied, across every synced device. */

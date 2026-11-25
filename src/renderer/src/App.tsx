@@ -2,6 +2,7 @@ import { useEffect, useState, lazy, Suspense } from 'react'
 import { AlertTriangle, X, FileUp, NotebookPen, Layers, Terminal, GraduationCap, Download } from 'lucide-react'
 import type { UpdateStatus } from '@shared/update'
 import { planUsageText } from '@shared/types'
+import { OFFLINE_SETTING } from '@shared/offline'
 import { importSharedWeek, dropOnWeek } from './lib/weekShare'
 
 /** Jobs already announced as done, and those whose plan usage was shown. */
@@ -64,6 +65,7 @@ export function App() {
     startCommandDispatch()
     void (async () => {
       const s = await api.settings.all()
+      if (s[OFFLINE_SETTING] === true) useStore.getState().setOffline(true, { save: false, quiet: true })
       const t = (s['ui.theme'] as Theme) ?? 'system'
       setTheme(t)
       applyTheme(t)
@@ -234,6 +236,7 @@ export function App() {
       shortcuts: () => useStore.getState().setSheet(!useStore.getState().sheet),
       'view.sidebar': () => useStore.getState().toggleRail(),
       'view.focus': () => useStore.getState().toggleFocus(),
+      'view.offline': () => useStore.getState().setOffline(!useStore.getState().offline),
       'view.explain': () => useStore.getState().openExplain(null),
       'view.theme': () => setThemeSaved(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system'),
       'view.zoomIn': () => setZoomSaved(zoom + 0.05),
