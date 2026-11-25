@@ -54,6 +54,7 @@ import {
   type Week,
   type WeekFull
 } from '@shared/course'
+import { cardKey, matchTopics, mergeLevels, mergePlan, remapContent, type MergeTopic } from '@shared/weekMerge'
 
 // A course is a run of weeks. Each week has its own files; its topics are
 // planned from those files only, knowing what earlier weeks already cover.
@@ -509,6 +510,184 @@ export function deleteWeek(weekId: string): void {
   for (const f of listFiles(w.course_id).filter((f) => f.week_id === weekId)) rmSync(f.path, { force: true })
   getDb().prepare('DELETE FROM weeks WHERE id = ?').run(weekId)
   touchCourse(w.course_id)
+}
+
+/**
+ * Merges duplicate weeks of a course into `targetId` (the same week added
+ * twice, or two people's versions of it), without AI and without dropping
+ * anything (see @shared/weekMerge for what counts as the same topic, section,
+ * question or card):
+ *   files         the same bytes become one file; the rest move over
+ *   recall cards  a card whose front is already there is a repeat; the rest
+ *                 move over with their reviews
+ *   topics        a matching topic merges in at every level (your progress on
+ *                 the target is kept; a finished one with new sections opens
+ *                 again at the first new one), the rest move over
+ * The other weeks are then removed. Returns what changed.
+ */
+export async function mergeWeeks(targetId: string, otherIds: string[]): Promise<{ weekId: string; merged: number; added: number; cards: number; files: number }> {
+  const d = getDb()
+  const target = weekRow(targetId)
+  const others = [...new Set(otherIds)].filter((id) => id !== targetId).map(weekRow)
+  if (!others.length) throw new Error('Pick another week to merge into this one.')
+  if (others.some((w) => w.course_id !== target.course_id)) throw new Error('Only weeks of the same course can be merged.')
+  for (const w of [target, ...others]) {
+    if (w.status === 'planning') throw new Error(`${w.label} is still being planned. Merge it when that's done.`)
+    if (d.prepare("SELECT 1 FROM topics WHERE week_id = ? AND status = 'writing'").get(w.id)) throw new Error(`A topic in ${w.label} is still being written. Merge it when that's done.`)
+  }
+  const deckId = ensureWeekDeck(targetId)
+  const sha = (p: string) => (existsSync(p) ? createHash('sha256').update(readFileSync(p)).digest('hex') : null)
+  const allFiles = listFiles(target.course_id)
+  const fileByHash = new Map<string, string>()
+  for (const f of allFiles.filter((f) => f.week_id === targetId)) {
+    const h = sha(f.path)
+    if (h) fileByHash.set(h, f.id)
+  }
+  let filePos = allFiles.filter((f) => f.week_id === targetId).length
+  const cardsIn = (deck: string) => d.prepare('SELECT id, front FROM cards WHERE deck_id = ?').all(deck) as { id: string; front: string }[]
+  const cardByKey = new Map<string, string[]>()
+  for (const c of cardsIn(deckId)) cardByKey.set(cardKey(c.front), [...(cardByKey.get(cardKey(c.front)) ?? []), c.id])
+  const touched = new Set<string>()
+  let merged = 0
+  let added = 0
+  let cards = 0
+  let files = 0
+
+  const asMerge = (r: TopicRow, fileMap: Map<string, string>, cardMap: Map<string, string>) => {
+    const level = rowLevel(r)
+    const contents: Record<string, TopicContent> = {}
+    const shown = json<TopicContent | null>(r.content, null)
+    if (shown) contents[level] = remapContent(shown, fileMap, cardMap)
+    for (const [l, v] of Object.entries(rowVersions(r))) if (v?.content && !contents[l]) contents[l] = remapContent(v.content, fileMap, cardMap)
+    const plan = json<OutlineTopic | null>(r.plan, null)
+    return { row: r, level, topic: { title: shown?.title ?? plan?.title ?? r.key, plan, contents } satisfies MergeTopic }
+  }
+
+  for (const w of others) {
+    // Files: the same bytes as one already in the target week are that file.
+    const fileMap = new Map<string, string>()
+    for (const f of allFiles.filter((f) => f.week_id === w.id)) {
+      const h = sha(f.path)
+      const same = h ? fileByHash.get(h) : undefined
+      if (same) {
+        fileMap.set(f.id, same)
+        d.prepare('DELETE FROM course_files WHERE id = ?').run(f.id)
+        rmSync(f.path, { force: true })
+      } else {
+        d.prepare('UPDATE course_files SET week_id = ?, position = ? WHERE id = ?').run(targetId, filePos++, f.id)
+        if (h) fileByHash.set(h, f.id)
+        files++
+      }
+    }
+    // Recall cards: repeats of one already in the target week go (each of those stands for at most
+    // one card here, and two of this week's own are never folded together); the rest move over with their reviews.
+    const cardMap = new Map<string, string>()
+    if (deckExists(w.deck_id)) {
+      const moving: string[] = []
+      const repeats: string[] = []
+      const before = new Map(cardByKey)
+      const used = new Set<string>()
+      for (const c of cardsIn(w.deck_id)) {
+        const k = cardKey(c.front)
+        const same = k ? before.get(k)?.find((id) => !used.has(id)) : undefined
+        if (same) {
+          used.add(same)
+          cardMap.set(c.id, same)
+          repeats.push(c.id)
+        } else {
+          moving.push(c.id)
+          if (k) cardByKey.set(k, [...(cardByKey.get(k) ?? []), c.id])
+        }
+      }
+      if (repeats.length) repo.deleteCards(repeats)
+      if (moving.length) repo.moveCards(moving, deckId)
+      cards += moving.length
+    }
+
+    // Topics.
+    const mine = (d.prepare('SELECT * FROM topics WHERE week_id = ? ORDER BY position').all(targetId) as TopicRow[]).map((r) => asMerge(r, new Map(), new Map()))
+    const theirs = (d.prepare('SELECT * FROM topics WHERE week_id = ? ORDER BY position').all(w.id) as TopicRow[]).map((r) => asMerge(r, fileMap, cardMap))
+    const matches = matchTopics(
+      mine.map((t) => t.topic),
+      theirs.map((t) => t.topic)
+    )
+    const weekNo = target.position + 1
+    let lastT = Math.max(0, ...mine.map((t) => Number(t.row.key.match(/t(\d+)$/)?.[1] ?? 0)))
+    let lastPos = Math.max(-1, ...mine.map((t) => t.row.position))
+    theirs.forEach((t, j) => {
+      const m = matches.get(j)
+      if (m === undefined) {
+        // Not in the target week: it moves over, renumbered.
+        const key = `w${weekNo}t${++lastT}`
+        const versions = Object.fromEntries(Object.entries(rowVersions(t.row)).map(([l, v]) => [l, { ...v, content: t.topic.contents[l] ?? v!.content }]))
+        d.prepare('UPDATE topics SET week_id = ?, key = ?, position = ?, plan = ?, content = ?, versions = ?, updated_at = ? WHERE id = ?').run(
+          targetId,
+          key,
+          ++lastPos,
+          t.topic.plan ? JSON.stringify({ ...t.topic.plan, id: key }) : t.row.plan,
+          t.topic.contents[t.level] ? JSON.stringify(t.topic.contents[t.level]) : t.row.content,
+          JSON.stringify(versions),
+          now(),
+          t.row.id
+        )
+        touched.add(t.row.id)
+        added++
+        return
+      }
+      // The same topic: one topic with everything from both.
+      const into = mine[m]
+      const contents = mergeLevels(into.topic.contents, t.topic.contents)
+      const levels = NOTE_LEVELS.filter((l) => contents[l])
+      const level = contents[into.level] ? into.level : (levels[0] ?? into.level)
+      const oldVersions = rowVersions(into.row)
+      const theirVersions = rowVersions(t.row)
+      const progressOf = (l: NoteLevel): TopicProgress => {
+        if (l === into.level && into.row.content) return { ...emptyProgress(), ...json<Partial<TopicProgress>>(into.row.progress, {}) }
+        return oldVersions[l]?.progress ?? (l === t.level ? { ...emptyProgress(), ...json<Partial<TopicProgress>>(t.row.progress, {}) } : theirVersions[l]?.progress) ?? emptyProgress()
+      }
+      // A finished level that gained sections opens again at the first new one.
+      const reopen = (l: NoteLevel, p: TopicProgress): TopicProgress => {
+        const before = l === into.level ? json<TopicContent | null>(into.row.content, null)?.sections.length : oldVersions[l]?.content.sections.length
+        const after = contents[l]?.sections.length ?? 0
+        return p.done && before !== undefined && after > before ? { ...p, done: false, section: before, step: null } : p
+      }
+      const versions = Object.fromEntries(levels.filter((l) => l !== level).map((l) => [l, { content: contents[l], progress: reopen(l, progressOf(l)) }]))
+      const plan = into.topic.plan && t.topic.plan ? mergePlan(into.topic.plan, t.topic.plan) : (into.topic.plan ?? t.topic.plan)
+      const writtenWith = { ...json<Record<string, unknown>>(t.row.written_with, {}), ...json<Record<string, unknown>>(into.row.written_with, {}) }
+      d.prepare('UPDATE topics SET status = ?, error = ?, plan = ?, content = ?, level = ?, versions = ?, progress = ?, written_with = ?, updated_at = ? WHERE id = ?').run(
+        contents[level] ? 'ready' : into.row.status,
+        contents[level] ? null : into.row.error,
+        plan ? JSON.stringify(plan) : into.row.plan,
+        contents[level] ? JSON.stringify(contents[level]) : null,
+        level,
+        JSON.stringify(versions),
+        JSON.stringify(contents[level] ? reopen(level, progressOf(level)) : emptyProgress()),
+        JSON.stringify(writtenWith),
+        now(),
+        into.row.id
+      )
+      // Its recall cards are the merged topic's now; its saved notes are replaced by the merged topic's.
+      d.prepare("UPDATE cards SET source = json_set(source, '$.ref', ?) WHERE json_extract(source, '$.type') = 'topic' AND json_extract(source, '$.ref') = ?").run(into.row.id, t.row.id)
+      d.prepare('DELETE FROM topics WHERE id = ?').run(t.row.id)
+      if (t.row.note_id) repo.deleteNote(t.row.note_id)
+      touched.add(into.row.id)
+      merged++
+    })
+
+    // An empty target takes the other week's plan.
+    if (target.status !== 'ready' && w.status === 'ready') {
+      setWeek(targetId, { status: 'ready', error: null, outline: target.outline ?? w.outline ?? null, planned_with: target.planned_with ?? w.planned_with ?? null })
+      target.status = 'ready'
+    }
+    deleteWeek(w.id)
+  }
+
+  for (const id of touched) {
+    refreshDormancy(id)
+    if (topicRow(id).status === 'ready') await syncTopicNote(id).catch(() => null)
+  }
+  touchCourse(target.course_id)
+  return { weekId: targetId, merged, added, cards, files }
 }
 
 export async function addFiles(weekId: string, files: string[]): Promise<CourseFile[]> {

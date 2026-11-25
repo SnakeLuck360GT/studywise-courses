@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { X, Lightbulb, CheckCircle2, XCircle, CircleDot, BookOpen, Trophy, Brain, ArrowRight, Sparkles, Shuffle, NotebookPen, RotateCcw, RefreshCw, HelpCircle, ClipboardCheck, ArrowLeft, Undo2 } from 'lucide-react'
+import { X, Lightbulb, CheckCircle2, XCircle, CircleDot, BookOpen, Trophy, Brain, ArrowRight, Sparkles, Shuffle, NotebookPen, RotateCcw, RefreshCw, HelpCircle, ClipboardCheck, ArrowLeft, Undo2, ChevronDown, Check } from 'lucide-react'
 import {
   COURSE_QUESTION_LABELS,
   NOTE_LEVELS,
@@ -24,7 +24,8 @@ import { useStudySession } from '../lib/lastSession'
 import { IS_MOBILE } from '../lib/platform'
 import { api, errorText, streamCall } from '../lib/api'
 import { Markdown } from '../components/Markdown'
-import { Button, Dots, Kbd, Modal, Pill, Textarea, cx } from '../components/ui'
+import { Button, Dots, Kbd, Menu, MenuItem, Modal, Pill, Textarea, cx } from '../components/ui'
+import { switchLevel } from '../lib/courseFlows'
 import { CourseQuestionView } from '../learn/CourseQuestions'
 import { insertRetry } from '@shared/retry'
 import { GREENS_TO_PASS, RED_GAP, nextPile, type PileRating } from '@shared/cardPile'
@@ -131,6 +132,8 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
   const [slots, setSlots] = useState<Record<number, Slot>>({})
   const [notesOpen, setNotesOpen] = useState(false)
   const [rewriteOpen, setRewriteOpen] = useState(false)
+  /** Bumped after switching depth, to load the topic again at that depth. */
+  const [reloadKey, setReloadKey] = useState(0)
   const progress = useRef<TopicProgress | null>(null)
   const sessionKey = `${id}:${test ? 'test' : 'learn'}`
   const cards = useRef<Record<number, CardsState>>({})
@@ -194,7 +197,7 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
     return () => {
       alive = false
     }
-  }, [id, section, test, offline])
+  }, [id, section, test, offline, reloadKey])
 
   // Keep the session up to date as you go; a finished one is let go, so Again starts over.
   useEffect(() => {
@@ -393,9 +396,36 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
         </Button>
         <div className="min-w-0 flex-1">
           <div className="mb-1.5 flex items-center justify-between gap-2 text-[0.85rem] text-muted">
-            <span className="truncate font-semibold">
-              {content.title}
-              {(topic.levels.length > 1 || topic.level !== 'standard') && <span className="font-normal"> · {NOTE_LEVEL_INFO[topic.level].label}</span>}
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate font-semibold">{content.title}</span>
+              {!test && topic.levels.length > 1 ? (
+                // Written at more than one depth: switch here, and carry on from your place at that depth.
+                <Menu
+                  trigger={(open) => (
+                    <button onClick={open} className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 font-normal hover:bg-surface-2 hover:text-ink" title="Switch depth">
+                      · {NOTE_LEVEL_INFO[topic.level].label}
+                      <ChevronDown className="size-3.5" />
+                    </button>
+                  )}
+                >
+                  {(close) =>
+                    topic.levels.map((l) => (
+                      <MenuItem
+                        key={l}
+                        icon={l === topic.level ? <Check className="size-4" /> : <span className="size-4" />}
+                        onClick={() => {
+                          close()
+                          if (l !== topic.level) void switchLevel(topic, l).then((t) => t && setReloadKey((k) => k + 1))
+                        }}
+                      >
+                        {NOTE_LEVEL_INFO[l].label}
+                      </MenuItem>
+                    ))
+                  }
+                </Menu>
+              ) : (
+                (topic.levels.length > 1 || topic.level !== 'standard') && <span className="shrink-0 font-normal"> · {NOTE_LEVEL_INFO[topic.level].label}</span>
+              )}
             </span>
             <span className="shrink-0 tabular">
               {test

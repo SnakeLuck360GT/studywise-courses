@@ -151,6 +151,11 @@ export function App() {
               if (r) toast(`Added ${r.added} week${r.added === 1 ? '' : 's'} from the marketplace${r.failed.length ? `; ${r.failed.length} didn’t download` : ''}`, r.failed.length ? 'info' : 'good')
             }
           }
+          // Merging marketplace copies: the course page shows the merged week once it's up.
+          if (typeof j.meta?.marketMerged === 'string' && first) {
+            st.bump()
+            toast(`${j.title.replace(/^Merge /, '')} is one week on the marketplace now, for everyone.`, 'good')
+          }
           const used = j.status === 'done' && !usageShown.has(j.id) ? planUsageText(j.planUsage) : null
           if (used) {
             usageShown.add(j.id)

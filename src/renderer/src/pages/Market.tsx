@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, FileText, ListPlus, RefreshCw, Search, Store, Trash2, Upload, Users } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, FileText, ListPlus, Merge, RefreshCw, Search, Store, Trash2, Upload, Users } from 'lucide-react'
 import { authorsText, modelLabel, weeksByWeek, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketSort, type MarketWeek, type WeekGroup } from '@shared/market'
-import { NOTE_LEVEL_INFO, isNoteLevel } from '@shared/course'
+import { NOTE_LEVELS, NOTE_LEVEL_INFO, isNoteLevel } from '@shared/course'
 import { api, errorText } from '../lib/api'
-import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, marketCopies, modelsText, publishAllToMarket, weekSummary } from '../lib/market'
+import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, levelCounts, marketCopies, modelsText, publishAllToMarket, weekSummary } from '../lib/market'
 import { confirmDialog } from '../lib/dialogs'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
@@ -164,7 +164,9 @@ function MarketCoursePage({ id }: { id: string }) {
       .course({ id })
       .then(setC)
       .catch((e) => setError(errorText(e)))
-  useEffect(() => void load(), [id])
+  // Again when the library changes, e.g. after merging copies of a week.
+  const version = useStore((s) => s.version)
+  useEffect(() => void load(), [id, version])
 
   const back = (
     <button className="inline-flex items-center gap-1 hover:text-ink" onClick={() => go({ name: 'market' })}>
@@ -208,7 +210,26 @@ function MarketCoursePage({ id }: { id: string }) {
  */
 function WeekGroupRow({ g, copies, onAdded, onRemoved }: { g: WeekGroup<MarketWeek>; copies: Record<string, MarketCopy>; onAdded: () => void; onRemoved: () => void }) {
   const [open, setOpen] = useState(false)
+  const [merging, setMerging] = useState(false)
   const downloads = g.versions.reduce((n, v) => n + v.downloads, 0)
+  const authors = [...new Set(g.versions.flatMap((v) => v.authors ?? [v.author]))]
+  const merge = async () => {
+    const ok = await confirmDialog(
+      `Merge the ${g.versions.length} versions of ${g.title} into one?`,
+      `Everything from each version goes into one week: every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, and every file. Only repeats are taken out; nothing is shortened or summarised, and nothing is generated. The merged week replaces these ${g.versions.length} versions on the marketplace for everyone, credited to ${authorsText(authors)}. Copies people already added stay as they are.`,
+      { confirmText: 'Merge into one' }
+    )
+    if (!ok) return
+    setMerging(true)
+    try {
+      await api.market.merge({ ids: g.versions.map((v) => v.id), label: `${g.title} (${g.versions.length} versions)` })
+      toast(`Merging ${g.versions.length} versions of ${g.title}. You can follow it in Jobs.`, 'info')
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setMerging(false)
+    }
+  }
   const mine = g.versions.some((v) => v.mine)
   const models = [...new Set(g.versions.map((v) => v.writtenWith[0] && modelLabel(v.writtenWith[0])).filter(Boolean))]
   return (
@@ -230,6 +251,12 @@ function WeekGroupRow({ g, copies, onAdded, onRemoved }: { g: WeekGroup<MarketWe
       </button>
       {open && (
         <div className="flex flex-col gap-2 border-t border-line p-3">
+          <div className="flex flex-wrap items-center gap-3 rounded-lg bg-surface-2 px-3 py-2.5 text-[0.88rem]">
+            <span className="min-w-0 flex-1 text-muted">Several versions of the same week? Merge them into one with everything from each, for everyone.</span>
+            <Button size="sm" loading={merging} onClick={merge}>
+              <Merge className="size-4" /> Merge into one
+            </Button>
+          </div>
           {g.versions.map((v) => (
             <WeekRow key={v.id} w={v} copy={copies[v.id]} onAdded={onAdded} onRemoved={onRemoved} />
           ))}
@@ -300,6 +327,9 @@ function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: Market
   }
   // Republished since you added it: your copy is the older version.
   const newer = copy?.how === 'added' && !!copy.at && new Date(w.updatedAt) > new Date(copy.at)
+  // Which depths its topics are written at, and how many of each.
+  const counts = levelCounts([w])
+  const depths = NOTE_LEVELS.filter((l) => counts[l]).map((l) => [l, counts[l]!] as const)
   const remove = async () => {
     if (!(await confirmDialog(`Take ${w.label} off the marketplace?`, 'People who already added it keep their copy. Your own course isn’t changed.', { confirmText: 'Take it down', danger: true }))) return
     try {
@@ -319,13 +349,21 @@ function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: Market
             <div className="font-semibold">
               {w.label}
               <span className="ml-2 text-[0.86rem] font-normal text-muted">
-                by {w.author}
-                {w.mine && ' (you)'}
+                by {authorsText(w.authors ?? [w.author])}
+                {w.mine && !w.merged && ' (you)'}
               </span>
+              {w.merged && (
+                <span className="ml-2 align-middle" title={`${(w.authors ?? []).length || 'Several'} people’s versions merged into one${w.mine ? ', by you' : ''}`}>
+                  <Pill tone="accent">
+                    <Merge className="size-3" /> Merged
+                  </Pill>
+                </span>
+              )}
             </div>
             <div className="text-[0.86rem] text-muted">
               {weekSummary(w)} · {mb(w.size)} · {plural(w.downloads, 'download')}
             </div>
+            {depths.length > 0 && <div className="text-[0.85rem] text-muted">Depths: {depths.map(([l, n]) => `${NOTE_LEVEL_INFO[l].label} (${n})`).join(', ')}</div>}
             <div className="mt-1 text-[0.85rem]">
               <span className="text-muted">Written with </span>
               {modelsText(w.writtenWith)}

@@ -1,6 +1,7 @@
-import { NOTE_LEVEL_INFO, type NoteLevel, type Topic } from '@shared/course'
+import { NOTE_LEVEL_INFO, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
+import { duplicateWeekGroups } from '@shared/weekMerge'
 import { api, errorText } from './api'
-import { askPlan, askWrite } from './dialogs'
+import { askPlan, askWrite, chooseDialog, confirmDialog } from './dialogs'
 import { toast, useStore } from './store'
 import { askAboutMatches } from '../components/MarketMatches'
 import { useMarketWeekHere } from './market'
@@ -20,7 +21,7 @@ export async function offerPlan(week: { id: string; label: string; topics?: { st
     if (matches.length) {
       const a = await askAboutMatches(week.label, matches)
       if (a === null) return false
-      if (a !== 'plan') return useMarketWeekHere({ id: a.use, mine: a.mine, courseId: a.courseId }, week)
+      if (a !== 'plan') return useMarketWeekHere({ id: a.use, mine: a.mine, courseId: a.courseId, topics: matches.find((m) => m.week.id === a.use)?.week.topics }, week)
     }
   }
   const written = week.topics?.filter((t) => t.status === 'ready').length ?? 0
@@ -126,4 +127,55 @@ export async function switchLevel(topic: Topic, level: NoteLevel): Promise<Topic
     toast(errorText(e), 'bad')
     return null
   }
+}
+
+// ---------------------------------------------------------------------------
+// Merging duplicate weeks (the same week added twice, or two people's versions)
+
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+const writtenIn = (w: WeekFull) => w.topics.filter((t) => t.status === 'ready').length
+const WHAT_MERGES =
+  'Every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, its files and its recall cards go into one week. Only repeats are taken out: nothing is shortened or summarised, and nothing is generated. Your progress and card reviews are kept.'
+
+async function runMerge(target: WeekFull, others: WeekFull[]): Promise<boolean> {
+  try {
+    const r = await api.courses.mergeWeeks({ weekId: target.id, otherIds: others.map((o) => o.id) })
+    const parts = [r.merged && `${plural(r.merged, 'topic')} combined`, r.added && `${plural(r.added, 'topic')} added`, r.cards && `${plural(r.cards, 'recall card')} moved over`].filter(Boolean)
+    toast(`Merged into ${target.label}${parts.length ? `: ${parts.join(', ')}` : ''}.`, 'good')
+    useStore.getState().bump()
+    return true
+  } catch (e) {
+    toast(errorText(e), 'bad')
+    return false
+  }
+}
+
+/** Merge copies of the same week in a course into one: the copy with the most written. True when merged. */
+export async function mergeDuplicateWeeks(weeks: WeekFull[], title: string): Promise<boolean> {
+  const target = [...weeks].sort((a, b) => writtenIn(b) - writtenIn(a) || a.position - b.position)[0]
+  const others = weeks.filter((w) => w.id !== target.id)
+  const ok = await confirmDialog(
+    `Merge the ${weeks.length} copies of ${title} into one?`,
+    `${WHAT_MERGES} Everything goes into ${target.label} (it has the most written), and ${others.map((w) => w.label).join(', ')} ${others.length === 1 ? 'is' : 'are'} then removed.`,
+    { confirmText: 'Merge into one' }
+  )
+  return ok ? runMerge(target, others) : false
+}
+
+/** Pick another week of the course to merge into this one. True when merged. */
+export async function mergeWeekWith(course: CourseFull, week: WeekFull): Promise<boolean> {
+  const others = course.weeks.filter((w) => w.id !== week.id)
+  if (!others.length) {
+    toast('This course has no other week to merge in.', 'info')
+    return false
+  }
+  // Its duplicate, if it has one, comes picked.
+  const dup = duplicateWeekGroups(course.weeks).find((g) => g.weeks.some((w) => w.id === week.id))
+  const choice = await chooseDialog(
+    `Merge another week into ${week.label}`,
+    others.map((w) => ({ value: w.id, label: `${w.label} (${plural(w.topics.length, 'topic')})` })),
+    { message: `${WHAT_MERGES} The week you pick is removed afterwards.`, confirmText: 'Merge', initial: dup?.weeks.find((w) => w.id !== week.id)?.id }
+  )
+  const other = others.find((w) => w.id === choice)
+  return other ? runMerge(week, [other]) : false
 }

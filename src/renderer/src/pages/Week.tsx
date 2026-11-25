@@ -32,10 +32,11 @@ import {
   Upload,
   X,
   Zap,
-  FilePlus2
+  FilePlus2,
+  Merge
 } from 'lucide-react'
 import { NOTE_LEVEL_INFO, NOTE_LEVELS, unreviewedSections, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
-import { offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics } from '../lib/courseFlows'
+import { mergeWeekWith, offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics } from '../lib/courseFlows'
 import { planUsageText, type JobInfo } from '@shared/types'
 import { shareWeek } from '../lib/weekShare'
 import { chooseMarketWeek, declinedMarketWeek, findMarketWeek, marketMatches, modelsText, publishToMarket, setWeekVisibility } from '../lib/market'
@@ -276,6 +277,11 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
                   <MenuItem icon={<Pencil className="size-4" />} onClick={() => (close(), void rename())}>
                     Rename week
                   </MenuItem>
+                  {c.weeks.length > 1 && (
+                    <MenuItem icon={<Merge className="size-4" />} onClick={() => (close(), void mergeWeekWith(c, w).then((ok) => ok && reload()))}>
+                      Merge another week into this one…
+                    </MenuItem>
+                  )}
                   <MenuItem danger icon={<Trash2 className="size-4" />} onClick={() => (close(), void del())}>
                     Delete week
                   </MenuItem>

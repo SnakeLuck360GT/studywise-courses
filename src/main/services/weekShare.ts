@@ -21,6 +21,7 @@ import { safeFileName } from '../library'
 import { addWeek, createCourse, ensureWeekDeck, fixTopicCardCounts, getCourse, refreshDormancy, syncTopicNote, weekFingerprint } from './course'
 import type { WeekFingerprint } from '@shared/fingerprint'
 import { IMPORTED_WEEKS_SETTING } from '@shared/market'
+import { NOTE_LEVELS } from '@shared/course'
 import { getSetting, setSetting } from '../db/repo'
 
 export const WEEK_EXT = 'studyweek'
@@ -181,6 +182,43 @@ async function readWeek(file: string): Promise<{ zip: JSZip; json: WeekJson }> {
   return { zip, json }
 }
 
+/**
+ * A topic row with only the levels of detail you chose to download. One that
+ * has none of them keeps the level it has (better than an empty topic); `fell`
+ * says so.
+ */
+function keepLevels(t: Row, chosen: string[]): { row: Row; fell: boolean } {
+  const parse = <T>(s: unknown, fb: T): T => {
+    try {
+      return typeof s === 'string' ? ((JSON.parse(s) as T) ?? fb) : fb
+    } catch {
+      return fb
+    }
+  }
+  const level = String(t.level || 'standard')
+  const versions = parse<Record<string, { content?: unknown; progress?: unknown }>>(t.versions, {})
+  const contents: Record<string, unknown> = {}
+  if (typeof t.content === 'string' && t.content) contents[level] = parse(t.content, null)
+  for (const [l, v] of Object.entries(versions)) if (v?.content && !contents[l]) contents[l] = v.content
+  const have = Object.keys(contents).filter((l) => contents[l])
+  if (!have.length) return { row: t, fell: false }
+  let keep = have.filter((l) => chosen.includes(l))
+  const fell = !keep.length
+  if (fell) keep = [have.includes(level) ? level : have[0]]
+  const shown = keep.includes(level) ? level : (NOTE_LEVELS.find((l) => keep.includes(l)) ?? keep[0])
+  const written = parse<Record<string, unknown>>(t.written_with, {})
+  return {
+    fell,
+    row: {
+      ...t,
+      level: shown,
+      content: JSON.stringify(contents[shown]),
+      versions: JSON.stringify(Object.fromEntries(keep.filter((l) => l !== shown).map((l) => [l, { content: contents[l], progress: {} }]))),
+      written_with: JSON.stringify(Object.fromEntries(Object.entries(written).filter(([l]) => keep.includes(l))))
+    }
+  }
+}
+
 /** What's in a shared week, for the import dialog. */
 export async function previewWeek(file: string): Promise<WeekPreview> {
   return previewOf((await readWeek(file)).json)
@@ -192,10 +230,20 @@ export async function previewWeek(file: string): Promise<WeekPreview> {
  */
 export async function importWeek(
   file: string,
-  target: { courseId: string } | { newCourse: true } | { weekId: string }
-): Promise<{ courseId: string; weekId: string; topics: number; cards: number }> {
+  target: { courseId: string } | { newCourse: true } | { weekId: string },
+  opts: { levels?: string[] } = {}
+): Promise<{ courseId: string; weekId: string; topics: number; cards: number; fellBack: number }> {
   const { zip, json } = await readWeek(file)
   const d = getDb()
+  // Only the levels of detail you chose (quick revision, standard, in-depth…).
+  let fellBack = 0
+  if (opts.levels?.length) {
+    json.topics = json.topics.map((t) => {
+      const k = keepLevels(t, opts.levels!)
+      if (k.fell) fellBack++
+      return k.row
+    })
+  }
 
   // Into an existing week: its topics, files and cards join that week's.
   const into = 'weekId' in target ? (d.prepare('SELECT * FROM weeks WHERE id = ?').get(target.weekId) as Row | undefined) : undefined
@@ -348,5 +396,5 @@ export async function importWeek(
   // Each written topic gets its notes in your notes, like one you wrote yourself.
   for (const tp of topics) if (tp.status === 'ready') await syncTopicNote(String(tp.id)).catch(() => null)
   d.prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(t, courseId)
-  return { courseId, weekId: week.id, topics: topics.length, cards: cards.length }
+  return { courseId, weekId: week.id, topics: topics.length, cards: cards.length, fellBack }
 }

@@ -69,7 +69,9 @@ const id = z.string().min(1)
 const addCourses = z.object({
   targets: z.array(z.object({ marketCourseId: id, courseId: z.string().nullable() })).min(1).max(500),
   mode: z.enum(['all', 'missing']),
-  onlyMine: z.boolean().optional()
+  onlyMine: z.boolean().optional(),
+  /** Levels of detail to download (quick, standard, deep, simple); every level when missing. */
+  levels: z.array(z.enum(NOTE_LEVELS)).min(1).optional()
 })
 const streamId = z.string().optional()
 
@@ -421,6 +423,12 @@ export const handlers = {
     }),
     renameWeek: h(z.object({ weekId: id, label: z.string().min(1).max(100) }), (i) => course.renameWeek(i.weekId, i.label)),
     deleteWeek: h(z.object({ weekId: id }), (i) => course.deleteWeek(i.weekId)),
+    /** Merge duplicate weeks of a course into one (nothing generated, nothing dropped); the others are removed. */
+    mergeWeeks: h(z.object({ weekId: id, otherIds: z.array(id).min(1).max(30) }), async (i) => {
+      const r = await course.mergeWeeks(i.weekId, i.otherIds)
+      market.recordWeeksMerged(i.weekId, i.otherIds)
+      return r
+    }),
     addFiles: h(z.object({ weekId: id, files: z.array(z.string()).min(1).max(200) }), (i) => course.addFiles(i.weekId, i.files)),
     removeFile: h(z.object({ fileId: id }), (i) => course.removeFile(i.fileId)),
     // Opens the course's copy of a file in its default app, or shows it in Explorer/Finder.
@@ -531,9 +539,16 @@ export const handlers = {
     }),
     /** Add a shared week to one of your courses, or to a new course. `market`: it's that marketplace week (to remember you have it). */
     importWeek: h(
-      z.object({ file: z.string().min(1), courseId: z.string().nullable(), weekId: z.string().optional(), market: z.object({ id, mine: z.boolean(), courseId: z.string().optional() }).optional() }),
+      z.object({
+        file: z.string().min(1),
+        courseId: z.string().nullable(),
+        weekId: z.string().optional(),
+        market: z.object({ id, mine: z.boolean(), courseId: z.string().optional() }).optional(),
+        /** Levels of detail to bring in (every level when missing). */
+        levels: z.array(z.enum(NOTE_LEVELS)).min(1).optional()
+      }),
       async (i) => {
-        const r = await weekShare.importWeek(i.file, i.weekId ? { weekId: i.weekId } : i.courseId ? { courseId: i.courseId } : { newCourse: true })
+        const r = await weekShare.importWeek(i.file, i.weekId ? { weekId: i.weekId } : i.courseId ? { courseId: i.courseId } : { newCourse: true }, { levels: i.levels })
         if (i.market) market.recordAdded(i.market.id, r.weekId, i.market.mine, i.market.courseId)
         return r
       }
@@ -576,6 +591,8 @@ export const handlers = {
       return startJob('other', title, (ctx) => market.publishMany(weeks, ctx))
     }),
     remove: h(z.object({ id }), (i) => market.remove(i.id)),
+    /** Merge several people's copies of the same week into one for everyone (a job: it downloads each copy). */
+    merge: h(z.object({ ids: z.array(id).min(2).max(30), label: z.string().max(200) }), (i) => startJob('other', `Merge ${i.label}`, (ctx) => market.mergeRemote(i.ids, ctx))),
     /** Download a published week; returns a .studyweek file to preview and import. */
     download: h(z.object({ id }), async (i) => {
       const file = await market.download(i.id)
@@ -590,7 +607,7 @@ export const handlers = {
       const n = plans.reduce((s, p) => s + p.items.length, 0)
       if (!n) throw new Error('You already have every one of those weeks.')
       const title = plans.length === 1 ? `Download ${plans[0].name}` : `Download ${n} weeks`
-      return startJob('other', title, (ctx) => market.addPlanned(plans, ctx))
+      return startJob('other', title, (ctx) => market.addPlanned(plans, ctx, i.levels))
     })
   },
   stats: {

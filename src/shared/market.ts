@@ -30,7 +30,12 @@ export interface MarketWeek {
   label: string
   /** The week's place in its author's own course (1 = their first week). */
   number: number
+  /** Who published it (for a merged week, who merged it: it's theirs to take down). */
   author: string
+  /** Everyone whose work is in it: one person, or everyone whose copies were merged into it. Missing from older marketplaces. */
+  authors?: string[]
+  /** Several people's copies merged into one. */
+  merged?: boolean
   topics: MarketTopic[]
   topicCount: number
   writtenCount: number

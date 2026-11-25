@@ -1,6 +1,7 @@
 import { AUTO_PUBLISH_SETTING, modelLabel, sameCourse, type AddMode, type MarketCopy, type MarketMatch, type MarketModel, type MarketWeek } from '@shared/market'
 import { api, errorText } from './api'
-import { chooseDialog, confirmDialog, confirmOrElse } from './dialogs'
+import { askLevels, chooseDialog, confirmDialog, confirmOrElse } from './dialogs'
+import { NOTE_LEVELS, isNoteLevel, type NoteLevel } from '@shared/course'
 import { importSharedWeek } from './weekShare'
 import { toast, useStore } from './store'
 
@@ -34,14 +35,42 @@ async function checkNotAdded(remoteWeekId: string, whereTo?: string): Promise<bo
   )
 }
 
+/** How many topics of these weeks are written at each level of detail. */
+export function levelCounts(weeks: Pick<MarketWeek, 'topics'>[]): Partial<Record<NoteLevel, number>> {
+  const n: Partial<Record<NoteLevel, number>> = {}
+  for (const t of weeks.flatMap((w) => w.topics)) for (const l of t.levels) if (isNoteLevel(l)) n[l] = (n[l] ?? 0) + 1
+  return n
+}
+
+/**
+ * Which levels of detail to download, when the weeks have more than one:
+ * undefined for all of them (also when there's only one), null when cancelled.
+ */
+export async function pickLevels(weeks: Pick<MarketWeek, 'topics'>[], what: string): Promise<NoteLevel[] | undefined | null> {
+  const counts = levelCounts(weeks)
+  const have = NOTE_LEVELS.filter((l) => counts[l])
+  if (have.length < 2) return undefined
+  const written = weeks.reduce((n, w) => n + w.topics.filter((t) => t.levels.length).length, 0)
+  const picked = await askLevels(`Which depths of ${what}?`, counts, {
+    topics: written,
+    message: `Its topics are written at ${have.length} depths. Download them all, or just the ones you’ll use.`
+  })
+  if (!picked) return null
+  return picked.length === have.length ? undefined : picked
+}
+
+const fellBackText = (n: number) => (n ? ` ${plural(n, 'topic')} didn’t have a depth you picked, so ${n === 1 ? 'it came' : 'they came'} in at the depth ${n === 1 ? 'it has' : 'they have'}.` : '')
+
 /** Download a published week, then ask which course it goes in (like a shared week). True when it was added. */
-export async function addMarketWeek(w: { id: string; mine: boolean; courseId: string }): Promise<boolean> {
+export async function addMarketWeek(w: { id: string; mine: boolean; courseId: string; label?: string; topics?: MarketWeek['topics'] }): Promise<boolean> {
   try {
     if (!(await checkNotAdded(w.id))) return false
+    const levels = w.topics ? await pickLevels([{ topics: w.topics }], w.label ?? 'this week') : undefined
+    if (levels === null) return false
     // The course you put this course's weeks in before: straight there, no "which course?".
     const linked = await linkedCourse(w.courseId)
     const { file } = await api.market.download({ id: w.id })
-    return await importSharedWeek({ file, courseId: linked ?? undefined, remembered: !!linked, market: { id: w.id, mine: w.mine, courseId: w.courseId } })
+    return await importSharedWeek({ file, courseId: linked ?? undefined, remembered: !!linked, market: { id: w.id, mine: w.mine, courseId: w.courseId }, levels, afterAdd: fellBackText })
   } catch (e) {
     toast(errorText(e), 'bad')
     return false
@@ -49,12 +78,14 @@ export async function addMarketWeek(w: { id: string; mine: boolean; courseId: st
 }
 
 /** Instead of planning a week yourself, fill it with a published one. */
-export async function useMarketWeekHere(remote: { id: string; mine: boolean; courseId?: string }, week: { id: string; label: string }): Promise<boolean> {
+export async function useMarketWeekHere(remote: { id: string; mine: boolean; courseId?: string; topics?: MarketWeek['topics'] }, week: { id: string; label: string }): Promise<boolean> {
   try {
     if (!(await checkNotAdded(remote.id, week.label))) return false
+    const levels = remote.topics ? await pickLevels([{ topics: remote.topics }], week.label) : undefined
+    if (levels === null) return false
     const { file } = await api.market.download({ id: remote.id })
-    const r = await api.courses.importWeek({ file, courseId: null, weekId: week.id, market: { id: remote.id, mine: remote.mine, courseId: remote.courseId } })
-    toast(`Added ${plural(r.topics, 'topic')} and ${plural(r.cards, 'card')} to ${week.label}. Nothing was generated.`, 'good')
+    const r = await api.courses.importWeek({ file, courseId: null, weekId: week.id, market: { id: remote.id, mine: remote.mine, courseId: remote.courseId }, levels })
+    toast(`Added ${plural(r.topics, 'topic')} and ${plural(r.cards, 'card')} to ${week.label}. Nothing was generated.${fellBackText(r.fellBack)}`, 'good')
     useStore.getState().bump()
     return true
   } catch (e) {
@@ -212,7 +243,7 @@ export async function chooseMarketWeek(week: { id: string; label: string }, matc
   if (a === 'plan') declined.add(week.id)
   if (!a || a === 'plan') return false
   found.delete(week.id)
-  return useMarketWeekHere({ id: a.use, mine: a.mine, courseId: a.courseId }, week)
+  return useMarketWeekHere({ id: a.use, mine: a.mine, courseId: a.courseId, topics: matches.find((m) => m.week.id === a.use)?.week.topics }, week)
 }
 
 /** From a week's ⋯ menu: look now, and say so when nobody has made it. */
@@ -279,7 +310,12 @@ async function confirmAndAdd(targets: Target[], mode: AddMode, onlyMine: boolean
   const confirmText = `Download ${plural(n, 'week')}`
   const a = remembered ? await confirmOrElse(title, message, { confirmText, altText: 'Somewhere else…' }) : (await confirmDialog(title, message, { confirmText })) ? 'ok' : null
   if (a !== 'ok') return a === 'alt' ? 'alt' : false
-  await api.market.addMany({ targets, mode, onlyMine })
+  // Which depths: asked once for every week going in, when they're written at more than one.
+  const wanted = new Set(plans.flatMap((p) => p.items.map((i) => i.id)))
+  const weeks = (await Promise.all(plans.filter((p) => p.items.length).map((p) => api.market.course({ id: p.marketCourseId }).catch(() => null)))).flatMap((c) => c?.weeks.filter((w) => wanted.has(w.id)) ?? [])
+  const levels = await pickLevels(weeks, n === 1 ? 'this week' : `these ${n} weeks`)
+  if (levels === null) return false
+  await api.market.addMany({ targets, mode, onlyMine, levels })
   toast(`Downloading ${plural(n, 'week')}. You can follow it in Jobs.`, 'info')
   return 'started'
 }

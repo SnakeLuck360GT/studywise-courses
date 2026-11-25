@@ -11,6 +11,7 @@ import { getSecret, setSecret } from '../secrets'
 import { getDb } from '../db'
 import { getCourse as localCourse, setCoursePrivate, setWeekPrivate, weekFingerprint } from './course'
 import { importWeek, weekContentHash, weekZip } from './weekShare'
+import { mergeWeekZips } from './weekMerge'
 import { startJob, type JobContext } from '../jobs'
 import { AUTO_PUBLISH_SETTING, IMPORTED_WEEKS_SETTING, planAdd, type AddMode, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketMatch, type MarketSort, type MarketStatus, type MarketWeek, type PublishableWeek } from '@shared/market'
 
@@ -74,7 +75,9 @@ export async function test(): Promise<{ user: string }> {
 class MarketError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    /** The rest of the server's answer (e.g. mergedInto). */
+    readonly data: Record<string, unknown> | null = null
   ) {
     super(message)
   }
@@ -96,9 +99,9 @@ async function send(path: string, init: RequestInit & { timeoutMs?: number } = {
     clearTimeout(timer)
   }
   if (res.ok) return res
-  const body = (await res.json().catch(() => null)) as { error?: string } | null
+  const body = (await res.json().catch(() => null)) as ({ error?: string } & Record<string, unknown>) | null
   if (res.status === 401) throw new MarketError(`The marketplace didn’t accept your API key. Make a new one on ${url} and paste it in Settings → Marketplace.`, 401)
-  throw new MarketError(body?.error || `The marketplace answered ${res.status}.`, res.status)
+  throw new MarketError(body?.error || `The marketplace answered ${res.status}.`, res.status, body)
 }
 
 async function request<T>(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
@@ -173,12 +176,20 @@ export async function publish(weekId: string): Promise<{ week: MarketWeek; repla
   let r: { week: MarketWeek }
   let replaced = !!before
   try {
-    r = await post(before)
+    try {
+      r = await post(before)
+    } catch (e) {
+      // Deleted on the site since: publish it as new.
+      if (!(before && e instanceof MarketError && e.status === 404)) throw e
+      r = await post()
+      replaced = false
+    }
   } catch (e) {
-    // Deleted on the site since: publish it as new.
-    if (!(before && e instanceof MarketError && e.status === 404)) throw e
-    r = await post()
-    replaced = false
+    // Merged with other people's copies on the marketplace: add yours to the merged week instead of a new copy.
+    const into = e instanceof MarketError && e.status === 409 ? e.data?.mergedInto : null
+    if (typeof into !== 'string') throw e
+    r = await mergeInto([into], [bytes])
+    replaced = true
   }
   setSetting(PUBLISHED_SETTING, { ...published(), [weekId]: r.week.id })
   setPublishedHash(weekId, hash)
@@ -334,6 +345,69 @@ export async function setCourseVisibility(courseId: string, isPrivate: boolean):
   return { removed: 0, failed: [] }
 }
 
+/** A published week's .studyweek bytes. */
+async function downloadBytes(remoteWeekId: string): Promise<Buffer> {
+  const res = await send(`/api/weeks/${encodeURIComponent(remoteWeekId)}/file`, { timeoutMs: 10 * 60_000 })
+  return Buffer.from(await res.arrayBuffer())
+}
+
+/**
+ * Merges published weeks (and any extra copies you have) into one and sends it
+ * to the marketplace, which swaps those weeks for it for everyone. One id with
+ * extra copies merges them into that (already merged) week.
+ */
+async function mergeInto(remoteIds: string[], extra: Buffer[] = [], ctx?: JobContext): Promise<{ week: MarketWeek; replaced: string[] }> {
+  const copies: Buffer[] = []
+  for (const [i, id] of remoteIds.entries()) {
+    if (ctx?.signal.aborted) throw new Error('Cancelled')
+    ctx?.progress(`Downloading copy ${i + 1} of ${remoteIds.length}`)
+    ctx?.live?.({ stage: `Downloading copy ${i + 1} of ${remoteIds.length}…`, percent: (i / remoteIds.length) * 0.6 })
+    copies.push(await downloadBytes(id))
+  }
+  ctx?.progress('Merging')
+  ctx?.live?.({ stage: 'Merging topics, questions and flashcards…', percent: 0.65 })
+  const { bytes } = await mergeWeekZips([...copies, ...extra])
+  ctx?.progress('Uploading the merged week')
+  ctx?.live?.({ stage: 'Uploading the merged week…', percent: 0.8 })
+  try {
+    return await request<{ week: MarketWeek; replaced: string[] }>(`/api/weeks/merge?ids=${remoteIds.map(encodeURIComponent).join(',')}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: new Uint8Array(bytes),
+      timeoutMs: 10 * 60_000
+    })
+  } catch (e) {
+    // An older marketplace without merging answers its plain "Not found".
+    if (e instanceof MarketError && e.status === 404 && /^not found$/i.test(e.message))
+      throw new Error(`${new URL(marketUrl()).host} can’t merge weeks yet: it needs updating to the latest studywise-server. Ask whoever runs it.`)
+    throw e
+  }
+}
+
+/**
+ * Several published copies of the same week (different people's) become one
+ * for everyone: everything from each, repeats taken out (see weekMerge). What
+ * this device remembers about the copies (added, published) follows the
+ * merged week.
+ */
+export async function mergeRemote(remoteIds: string[], ctx: JobContext): Promise<{ week: MarketWeek }> {
+  const ids = [...new Set(remoteIds)]
+  if (ids.length < 2) throw new Error('Pick at least two copies to merge.')
+  const r = await mergeInto(ids, [], ctx)
+  const gone = new Set(r.replaced ?? ids)
+  const a = added()
+  const next = { ...a }
+  for (const id of gone) if (a[id] && !next[r.week.id]) next[r.week.id] = a[id]
+  setSetting(ADDED_SETTING, next)
+  // Your own copy now lives in the merged week; publishing that week again merges into it (the site says where).
+  const on = published()
+  setSetting(PUBLISHED_SETTING, Object.fromEntries(Object.entries(on).map(([w, remote]) => [w, gone.has(remote) ? r.week.id : remote])))
+  for (const [w, remote] of Object.entries(on)) if (gone.has(remote)) setPublishedHash(w, null)
+  ctx.meta({ marketMerged: r.week.id })
+  ctx.progress(`Merged ${ids.length} copies into one week, by ${(r.week.authors ?? [r.week.author]).join(', ')}`)
+  return { week: r.week }
+}
+
 /** Download a published week to a temporary .studyweek file, to import like a shared week. */
 export async function download(remoteWeekId: string): Promise<string> {
   const res = await send(`/api/weeks/${encodeURIComponent(remoteWeekId)}/file`, { timeoutMs: 10 * 60_000 })
@@ -358,6 +432,25 @@ export function recordAdded(remoteWeekId: string, weekId: string, mine: boolean,
   if (!mine) return
   setSetting(PUBLISHED_SETTING, { ...published(), [weekId]: remoteWeekId })
   setSetting(IMPORTED_WEEKS_SETTING, getSetting<string[]>(IMPORTED_WEEKS_SETTING, []).filter((id) => id !== weekId))
+}
+
+/**
+ * Weeks of yours were merged into `targetId` (course.mergeWeeks): what the
+ * marketplace remembers about them now points at the merged week. A merged
+ * week that wasn't published takes over one of the others' published copy, so
+ * publishing it updates that one; it counts as changed, so it goes up again.
+ */
+export function recordWeeksMerged(targetId: string, otherIds: string[]): void {
+  const gone = new Set(otherIds)
+  setSetting(ADDED_SETTING, Object.fromEntries(Object.entries(added()).map(([remote, a]) => [remote, gone.has(a.weekId) ? { ...a, weekId: targetId } : a])))
+  const on = published()
+  const takeOver = on[targetId] ?? otherIds.map((id) => on[id]).find(Boolean)
+  const next = Object.fromEntries(Object.entries(on).filter(([w]) => !gone.has(w)))
+  if (takeOver) next[targetId] = takeOver
+  setSetting(PUBLISHED_SETTING, next)
+  setSetting(PUBLISHED_HASH_SETTING, Object.fromEntries(Object.entries(publishedHashes()).filter(([w]) => w !== targetId && !gone.has(w))))
+  const imported = getSetting<string[]>(IMPORTED_WEEKS_SETTING, [])
+  if (imported.some((id) => gone.has(id))) setSetting(IMPORTED_WEEKS_SETTING, [...new Set([...imported.filter((id) => !gone.has(id)), targetId])])
 }
 
 const links = () => getSetting<Record<string, string>>(LINKS_SETTING, {})
@@ -457,7 +550,7 @@ export async function planAdds(targets: AddTarget[], mode: AddMode, onlyMine = f
  * Download and add the planned weeks one after another (a job). One failing
  * doesn't stop the rest. A new course is made by the first week that goes in.
  */
-export async function addPlanned(plans: AddPlan[], ctx: JobContext): Promise<{ added: number; failed: string[] }> {
+export async function addPlanned(plans: AddPlan[], ctx: JobContext, levels?: string[]): Promise<{ added: number; failed: string[] }> {
   const total = plans.reduce((n, p) => n + p.items.length, 0)
   const failed: string[] = []
   let added = 0
@@ -473,7 +566,7 @@ export async function addPlanned(plans: AddPlan[], ctx: JobContext): Promise<{ a
       let file: string | null = null
       try {
         file = await download(item.id)
-        const r = await importWeek(file, item.into ? { weekId: item.into.id } : courseId ? { courseId } : { newCourse: true })
+        const r = await importWeek(file, item.into ? { weekId: item.into.id } : courseId ? { courseId } : { newCourse: true }, { levels })
         courseId = r.courseId
         recordAdded(item.id, r.weekId, item.mine, p.marketCourseId)
         added++

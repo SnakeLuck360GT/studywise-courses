@@ -15,8 +15,11 @@ interface Ask {
    * options; "plan" asks whether to plan, with optional instructions; "write" picks
    * levels of detail, with optional instructions.
    */
-  kind: 'text' | 'confirm' | 'choose' | 'plan' | 'write'
+  kind: 'text' | 'confirm' | 'choose' | 'plan' | 'write' | 'levels'
   message?: string
+  /** For "levels": the levels there are to pick from, with a note on each (how many topics have it). */
+  only?: NoteLevel[]
+  notes?: Partial<Record<NoteLevel, string>>
   options?: { value: string; label: string }[]
   /** For "write": levels ticked to start with, whether more than one can be picked, and levels already written. */
   levels?: NoteLevel[]
@@ -86,10 +89,32 @@ export function askWrite(
   )
 }
 
-function LevelPicker({ value, onChange, multi, written }: { value: NoteLevel[]; onChange: (v: NoteLevel[]) => void; multi: boolean; written: NoteLevel[] }) {
+/**
+ * Pick which levels of detail to download, from the ones a week (or several)
+ * has. `available` is how many topics have each level. Resolves to the levels
+ * picked (every one of them for "All depths"), or null when cancelled.
+ */
+export function askLevels(title: string, available: Partial<Record<NoteLevel, number>>, opts: { message?: string; confirmText?: string; topics?: number } = {}): Promise<NoteLevel[] | null> {
+  const only = NOTE_LEVELS.filter((l) => (available[l] ?? 0) > 0)
+  const notes = Object.fromEntries(only.map((l) => [l, opts.topics ? `${available[l]} of ${opts.topics} topic${opts.topics === 1 ? '' : 's'}` : `${available[l]} topic${available[l] === 1 ? '' : 's'}`]))
+  return new Promise((resolve) =>
+    useDialog.getState().set({
+      title,
+      kind: 'levels',
+      confirmText: 'Download',
+      ...opts,
+      only,
+      notes,
+      levels: only,
+      resolve: (v) => resolve(v === null ? null : (JSON.parse(v) as NoteLevel[]))
+    })
+  )
+}
+
+function LevelPicker({ value, onChange, multi, written, only, notes }: { value: NoteLevel[]; onChange: (v: NoteLevel[]) => void; multi: boolean; written: NoteLevel[]; only?: NoteLevel[]; notes?: Partial<Record<NoteLevel, string>> }) {
   return (
     <div className="flex flex-col gap-2" role={multi ? 'group' : 'radiogroup'} aria-label="Level of detail">
-      {NOTE_LEVELS.map((l) => {
+      {(only ?? NOTE_LEVELS).map((l) => {
         const on = value.includes(l)
         return (
           <button
@@ -110,6 +135,7 @@ function LevelPicker({ value, onChange, multi, written }: { value: NoteLevel[]; 
               <span className="font-semibold">{NOTE_LEVEL_INFO[l].label}</span>
               {l === 'standard' && <span className="ml-1.5 text-[0.8rem] text-muted">default</span>}
               {written.includes(l) && <span className="ml-1.5 text-[0.8rem] text-muted">· already written, this replaces it</span>}
+              {notes?.[l] && <span className="ml-1.5 text-[0.8rem] text-muted">· {notes[l]}</span>}
               <span className="block text-[0.86rem] text-muted">{NOTE_LEVEL_INFO[l].about}</span>
             </span>
           </button>
@@ -144,6 +170,7 @@ export function DialogHost() {
       if (ask.multi) localStorage.setItem(LEVELS_KEY, JSON.stringify(levels))
       return close(JSON.stringify({ levels, instructions: value.trim() }))
     }
+    if (ask.kind === 'levels') return levels.length ? close(JSON.stringify(levels)) : undefined
     close(ask.kind === 'confirm' ? 'ok' : value.trim())
   }
   const many = ask.kind === 'write' && levels.length > 1
@@ -158,9 +185,10 @@ export function DialogHost() {
             {ask.cancelText ?? 'Cancel'}
           </Button>
           {ask.altText && <Button onClick={() => close('alt')}>{ask.altText}</Button>}
-          <Button variant={ask.danger ? 'danger' : 'primary'} onClick={ok} disabled={ask.kind === 'write' && !levels.length}>
+          <Button variant={ask.danger ? 'danger' : 'primary'} onClick={ok} disabled={(ask.kind === 'write' || ask.kind === 'levels') && !levels.length}>
             {ask.confirmText ?? 'OK'}
             {many ? ` · ${levels.length} levels` : ''}
+            {ask.kind === 'levels' && ask.only && (levels.length === ask.only.length ? ' all depths' : ` · ${levels.length} of ${ask.only.length} depths`)}
           </Button>
         </>
       }
@@ -188,6 +216,22 @@ export function DialogHost() {
             <div className="text-[0.84rem] font-medium text-ink/80">{ask.multi ? 'Level of detail (pick one or more)' : 'Level of detail'}</div>
             <LevelPicker value={levels} onChange={setLevels} multi={!!ask.multi} written={ask.written ?? []} />
             {many && <p className="text-[0.84rem] text-muted">Each level is written separately (one AI call each) and all of them are kept. Pick which one to study on the week page.</p>}
+          </>
+        )}
+        {ask.kind === 'levels' && ask.only && (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[0.84rem] font-medium text-ink/80">Depths to download</span>
+              <button
+                type="button"
+                className="text-[0.84rem] font-medium text-accent hover:underline"
+                onClick={() => setLevels(levels.length === ask.only!.length ? [ask.only![0]] : ask.only!)}
+              >
+                {levels.length === ask.only.length ? 'Just one' : 'All depths'}
+              </button>
+            </div>
+            <LevelPicker value={levels} onChange={setLevels} multi written={[]} only={ask.only} notes={ask.notes} />
+            <p className="text-[0.84rem] text-muted">A topic that isn’t written at any depth you pick comes in at the depth it has. You can switch depths, or write another, on the week page later.</p>
           </>
         )}
         {(ask.kind === 'plan' || ask.kind === 'write') && (

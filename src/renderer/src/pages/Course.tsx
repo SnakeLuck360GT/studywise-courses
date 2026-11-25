@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { SlidersHorizontal, Sparkles, Play, Layers, MoreHorizontal, Pencil, Trash2, Plus, ChevronRight, Download, BellOff, CalendarDays, Scissors, StickyNote, Store, Globe, Lock } from 'lucide-react'
-import { offerPlan, writeTopics } from '../lib/courseFlows'
+import { SlidersHorizontal, Sparkles, Play, Layers, MoreHorizontal, Pencil, Trash2, Plus, ChevronRight, Download, BellOff, CalendarDays, Scissors, StickyNote, Store, Globe, Lock, Copy, Merge } from 'lucide-react'
+import { mergeDuplicateWeeks, offerPlan, writeTopics } from '../lib/courseFlows'
+import { duplicateWeekGroups } from '@shared/weekMerge'
 import { importSharedWeek } from '../lib/weekShare'
 import { declinedMarketWeek, marketMatches, offerMarketWeek, publishAllToMarket, setCourseVisibility } from '../lib/market'
 import { TrimCardsModal } from '../components/TrimCards'
@@ -179,6 +180,18 @@ export function CoursePage({ id }: { id: string }) {
           />
         </div>
       )}
+      {duplicateWeekGroups(c.weeks).map((g) => (
+        <div key={g.title} className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-[0.92rem]">
+          <Copy className="size-4 shrink-0 text-warn" />
+          <span className="min-w-0 flex-1">
+            <span className="font-semibold">{g.title} is in this course {g.weeks.length} times</span>
+            <span className="text-muted"> ({g.weeks.map((w) => w.label).join(', ')}). Merge them into one week with everything from each, repeats taken out.</span>
+          </span>
+          <Button size="sm" onClick={() => void mergeDuplicateWeeks(g.weeks, g.title).then((ok) => void (ok && load()))}>
+            <Merge className="size-4" /> Merge into one
+          </Button>
+        </div>
+      ))}
       {c.weeks.length > 0 && (
         <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
           {sortWeeks(c.weeks, order).map((w) => (

@@ -1,3 +1,4 @@
+import type { NoteLevel } from '@shared/course'
 import { api, errorText } from './api'
 import { chooseDialog, confirmDialog, confirmOrElse } from './dialogs'
 import { offerPlan } from './courseFlows'
@@ -13,7 +14,16 @@ import { toast, useStore } from './store'
  * the next week of it goes to the same place). True when it was added.
  */
 export async function importSharedWeek(
-  opts: { file?: string; courseId?: string; remembered?: boolean; market?: { id: string; mine: boolean; courseId?: string } } = {}
+  opts: {
+    file?: string
+    courseId?: string
+    remembered?: boolean
+    market?: { id: string; mine: boolean; courseId?: string }
+    /** Levels of detail to bring in (all when missing). */
+    levels?: NoteLevel[]
+    /** More to say in the "Added" toast, given how many topics came in at a depth that wasn't picked. */
+    afterAdd?: (fellBack: number) => string
+  } = {}
 ): Promise<boolean> {
   try {
     const p = await api.courses.previewWeek(opts.file ? { file: opts.file } : undefined)
@@ -43,8 +53,8 @@ export async function importSharedWeek(
       if (choice === null) return false
       courseId = choice || null
     }
-    const r = await api.courses.importWeek({ file: p.file, courseId, market: opts.market })
-    toast(`Added ${p.week}: ${r.topics} topic${r.topics === 1 ? '' : 's'} and ${r.cards} card${r.cards === 1 ? '' : 's'}`, 'good')
+    const r = await api.courses.importWeek({ file: p.file, courseId, market: opts.market, levels: opts.levels })
+    toast(`Added ${p.week}: ${r.topics} topic${r.topics === 1 ? '' : 's'} and ${r.cards} card${r.cards === 1 ? '' : 's'}.${opts.afterAdd?.(r.fellBack) ?? ''}`, 'good')
     useStore.getState().bump()
     useStore.getState().go({ name: 'course', id: r.courseId })
     return true
