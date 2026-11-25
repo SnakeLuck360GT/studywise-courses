@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Smartphone, Laptop, RefreshCw, Trash2, Wifi, WifiOff, CheckCircle2, AlertTriangle } from 'lucide-react'
 import type { LinkStatus, SyncStatus } from '@shared/types'
 import type { PhoneSyncStatus } from '@shared/mobile'
@@ -6,7 +6,7 @@ import { api, errorText, onEvent } from '../lib/api'
 import { mobile } from '../lib/platform'
 import { toast, useStore } from '../lib/store'
 import { confirmDialog } from '../lib/dialogs'
-import { Button, Card, Field, Input, Pill, Toggle, Spinner } from './ui'
+import { Button, Card, Field, Input, Pill, Toggle, Spinner, cx } from './ui'
 
 export function timeAgo(iso: string | null): string {
   if (!iso) return 'never'
@@ -21,18 +21,25 @@ export function timeAgo(iso: string | null): string {
 }
 
 // ---------------------------------------------------------------------------
-// Desktop: let phones sync with this computer.
+// Desktop: phones and other computers syncing with this one, and this one
+// linking to another computer. Every connection shows in one "Synced devices"
+// list, the same way on both computers of a linked pair.
 
 export function DesktopPhoneTab() {
   const [s, setS] = useState<SyncStatus | null>(null)
+  const [link, setLink] = useState<LinkStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const known = useRef<number | null>(null)
 
   const load = () => api.sync.status().then(setS)
   useEffect(() => {
     void load()
-    // A phone pairing or syncing changes what's shown here.
-    const off = onEvent((ev) => ev.type === 'sync' && void load())
+    void api.sync.linkStatus().then(setLink)
+    // A device pairing or syncing changes what's shown here.
+    const off = onEvent((ev) => {
+      if (ev.type === 'sync') void load()
+      if (ev.type === 'link') setLink(ev.status)
+    })
     const t = setInterval(load, 5000)
     return () => {
       off()
@@ -45,7 +52,7 @@ export function DesktopPhoneTab() {
     known.current = s.devices.length
   }, [s?.devices.length])
 
-  if (!s) return null
+  if (!s || !link) return null
   const setEnabled = async (on: boolean) => {
     setBusy(true)
     try {
@@ -119,61 +126,126 @@ export function DesktopPhoneTab() {
             </Button>
           </div>
         )}
+      </Card>
 
-        {s.devices.length > 0 && (
-          <div className="mt-2">
-            <div className="mb-2 text-[0.85rem] font-semibold text-muted">Paired devices</div>
-            <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
-              {s.devices.map((d) => (
-                <li key={d.id} className="flex items-center gap-3 px-4 py-2.5">
-                  <Smartphone className="size-4 shrink-0 text-muted" />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium">{d.name}</div>
-                    <div className="text-[0.82rem] text-muted">Synced {timeAgo(d.lastSync)}</div>
-                  </div>
+      <SyncedDevices status={s} link={link} onStatus={setS} onLink={setLink} />
+      {!link.linked && <LinkComputerCard onLinked={setLink} />}
+    </div>
+  )
+}
+
+/** One connection, drawn the same whichever side of it you're on. */
+function DeviceRow({ kind, name, lines, busy, warn, actions }: { kind: 'phone' | 'computer'; name: string; lines: (string | false | null | undefined)[]; busy?: boolean; warn?: boolean; actions: ReactNode }) {
+  const Icon = kind === 'computer' ? Laptop : Smartphone
+  return (
+    <li className="flex items-center gap-3 px-4 py-3">
+      <div className="relative grid size-9 shrink-0 place-items-center rounded-lg bg-surface-2 text-muted">
+        <Icon className="size-[18px]" />
+        <span className={cx('absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full ring-2 ring-surface', busy ? 'animate-pulse bg-accent' : warn ? 'bg-warn' : 'bg-good')} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{name}</div>
+        <div className="text-[0.82rem] text-muted">{lines.filter(Boolean).join(' · ')}</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1">{actions}</div>
+    </li>
+  )
+}
+
+function SyncedDevices({ status, link, onStatus, onLink }: { status: SyncStatus; link: LinkStatus; onStatus: (s: SyncStatus) => void; onLink: (s: LinkStatus) => void }) {
+  const none = !link.linked && !status.devices.length
+  return (
+    <Card className="flex flex-col gap-3 lg:col-span-2">
+      <h3 className="text-lg font-semibold">Synced devices</h3>
+      {none ? (
+        <p className="text-[0.92rem] text-muted">None yet. Pair a phone or computer above, or link this computer to another one below.</p>
+      ) : (
+        <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line">
+          {link.linked && (
+            <DeviceRow
+              kind="computer"
+              name={link.name ?? 'Computer'}
+              busy={link.state === 'syncing'}
+              warn={link.state === 'error'}
+              lines={[
+                'Linked from this computer',
+                link.state === 'syncing' ? 'Syncing…' : `Synced ${timeAgo(link.lastSync)}`,
+                link.pending > 0 && link.state !== 'syncing' && `${link.pending} ${link.pending === 1 ? 'change' : 'changes'} to send`,
+                link.filesLeft > 0 && `${link.filesLeft} ${link.filesLeft === 1 ? 'file' : 'files'} still to copy`
+              ]}
+              actions={
+                <>
+                  <Button size="icon" variant="ghost" title="Sync now" aria-label={`Sync with ${link.name} now`} disabled={link.state === 'syncing'} onClick={async () => onLink(await api.sync.linkNow())}>
+                    <RefreshCw className={cx('size-4', link.state === 'syncing' && 'animate-spin')} />
+                  </Button>
                   <Button
                     size="icon"
                     variant="ghost"
-                    aria-label={`Remove ${d.name}`}
-                    title="Unpair"
+                    title="Unlink"
+                    aria-label={`Unlink from ${link.name}`}
                     onClick={async () => {
-                      if (await confirmDialog(`Unpair ${d.name}?`, 'It keeps its copy of your library but stops syncing until you pair it again.', { confirmText: 'Unpair', danger: true })) setS(await api.sync.unpair({ id: d.id }))
+                      if (await confirmDialog(`Unlink from ${link.name}?`, 'Both computers keep everything they have, but changes stop going between them until you link again.', { confirmText: 'Unlink', danger: true }))
+                        onLink(await api.sync.unlink())
                     }}
                   >
                     <Trash2 className="size-4" />
                   </Button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </Card>
-
-      <LinkComputerCard />
-    </div>
+                </>
+              }
+            />
+          )}
+          {status.devices.map((d) => (
+            <DeviceRow
+              key={d.id}
+              kind={d.kind}
+              name={d.name}
+              lines={['Paired with this computer', `Synced ${timeAgo(d.lastSync)}`]}
+              actions={
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label={`Unpair ${d.name}`}
+                  title="Unpair"
+                  onClick={async () => {
+                    if (await confirmDialog(`Unpair ${d.name}?`, 'It keeps its copy of your library but stops syncing until you pair it again.', { confirmText: 'Unpair', danger: true })) onStatus(await api.sync.unpair({ id: d.id }))
+                  }}
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              }
+            />
+          ))}
+        </ul>
+      )}
+      {link.error && (
+        <div className="flex items-start gap-2 text-[0.9rem] text-warn">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {link.error}
+        </div>
+      )}
+      {!none && (
+        <p className="text-[0.85rem] text-muted">
+          Devices sync in the background while Studywise is open on both: a few seconds after a change, and every minute. Settings, prompts and API keys stay on each device.
+          {link.linked && status.devices.length > 0 && ` Devices paired with this computer sync through it to ${link.name} too.`}
+        </p>
+      )}
+    </Card>
   )
 }
 
 // ---------------------------------------------------------------------------
 // Desktop: link this computer to another one (it pairs like a phone does).
 
-function LinkComputerCard() {
-  const [s, setS] = useState<LinkStatus | null>(null)
+function LinkComputerCard({ onLinked }: { onLinked: (s: LinkStatus) => void }) {
   const [address, setAddress] = useState('')
   const [code, setCode] = useState('')
   const [linking, setLinking] = useState(false)
-  useEffect(() => {
-    void api.sync.linkStatus().then(setS)
-    return onEvent((ev) => ev.type === 'link' && setS(ev.status))
-  }, [])
-  if (!s) return null
 
   const link = async () => {
     setLinking(true)
     try {
       const r = await api.sync.link({ address: address.trim(), code: code.trim() })
-      setS(r)
       setCode('')
+      onLinked(r)
       toast(`Linked with ${r.name}. Your libraries are merged and now stay in sync.`, 'good')
       useStore.getState().bump()
     } catch (e) {
@@ -188,79 +260,39 @@ function LinkComputerCard() {
       <h3 className="flex items-center gap-2 text-lg font-semibold">
         <Laptop className="size-5" /> Link to another computer
       </h3>
-      {!s.linked ? (
-        <>
-          <p className="text-[0.92rem] text-muted">
-            Bring your courses, decks, notes and progress over from another computer, and keep both in sync from then on, with no file to export or copy. Course files (slides, transcripts) and pasted images are copied across too. Nothing on
-            either computer is replaced: the two libraries are merged, and after that a change on one shows up on the other.
-          </p>
-          <ol className="list-decimal space-y-1 pl-5 text-[0.92rem] text-muted">
-            <li>On the other computer, open Studywise → Settings → Devices.</li>
-            <li>Turn on syncing and press Pair a device.</li>
-            <li>Type the address and code it shows here.</li>
-          </ol>
-          <div className="grid gap-3 sm:grid-cols-[1fr_180px_auto] sm:items-end">
-            <Field label="Other computer’s address">
-              <Input autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="192.168.1.20:47821" value={address} onChange={(e) => setAddress(e.target.value)} />
-            </Field>
-            <Field label="Pairing code">
-              <Input
-                inputMode="numeric"
-                maxLength={6}
-                placeholder="123456"
-                className="tabular font-mono tracking-[0.2em]"
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-                onKeyDown={(e) => e.key === 'Enter' && address.trim() && code.length === 6 && void link()}
-              />
-            </Field>
-            <Button variant="primary" loading={linking} disabled={!address.trim() || code.length !== 6} onClick={link}>
-              <Laptop className="size-4" /> Link
-            </Button>
-          </div>
-          <p className="text-[0.85rem] text-muted">Both computers need to be on the same network (or the same Tailscale network), with the same version of Studywise. The first sync can take a minute for a big library.</p>
-        </>
-      ) : (
-        <>
-          <div className="flex flex-wrap items-center gap-3 rounded-lg bg-surface-2 px-4 py-3 text-[0.92rem]">
-            {s.state === 'syncing' ? <Spinner className="size-4 text-accent" /> : s.state === 'error' ? <WifiOff className="size-4 text-warn" /> : <CheckCircle2 className="size-4 text-good" />}
-            <div className="min-w-0 flex-1">
-              <div className="font-semibold">
-                {s.state === 'syncing' ? `Syncing with ${s.name}…` : s.state === 'error' ? `Can’t sync with ${s.name} right now` : `In sync with ${s.name}`}
-              </div>
-              <div className="text-muted">
-                <code className="font-mono">{s.address}</code> · Last synced {timeAgo(s.lastSync)}
-                {s.pending > 0 && s.state !== 'syncing' && ` · ${s.pending} ${s.pending === 1 ? 'change' : 'changes'} to send`}
-                {s.filesLeft > 0 && ` · ${s.filesLeft} ${s.filesLeft === 1 ? 'file' : 'files'} still to copy`}
-              </div>
-            </div>
-            <Button size="sm" variant="ghost" disabled={s.state === 'syncing'} onClick={async () => setS(await api.sync.linkNow())}>
-              <RefreshCw className="size-4" /> Sync now
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={async () => {
-                if (await confirmDialog(`Unlink from ${s.name}?`, 'Both computers keep everything they have, but changes stop going between them until you link again.', { confirmText: 'Unlink', danger: true }))
-                  setS(await api.sync.unlink())
-              }}
-            >
-              <Trash2 className="size-4" /> Unlink
-            </Button>
-          </div>
-          {s.error && (
-            <div className="flex items-start gap-2 text-[0.9rem] text-warn">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {s.error}
-            </div>
-          )}
-          <p className="text-[0.85rem] text-muted">
-            Syncs in the background while Studywise is open on both: a few seconds after a change, and every minute. Settings, prompts and API keys stay on each computer. Phones paired with this computer sync through it to {s.name} too.
-          </p>
-        </>
-      )}
+      <p className="text-[0.92rem] text-muted">
+        Bring your courses, decks, notes and progress over from another computer, and keep both in sync from then on, with no file to export or copy. Course files (slides, transcripts) and pasted images are copied across too. Nothing on either
+        computer is replaced: the two libraries are merged, and after that a change on one shows up on the other.
+      </p>
+      <ol className="list-decimal space-y-1 pl-5 text-[0.92rem] text-muted">
+        <li>On the other computer, open Studywise → Settings → Devices.</li>
+        <li>Turn on syncing and press Pair a device.</li>
+        <li>Type the address and code it shows here.</li>
+      </ol>
+      <div className="grid gap-3 sm:grid-cols-[1fr_180px_auto] sm:items-end">
+        <Field label="Other computer’s address">
+          <Input autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="192.168.1.20:47821" value={address} onChange={(e) => setAddress(e.target.value)} />
+        </Field>
+        <Field label="Pairing code">
+          <Input
+            inputMode="numeric"
+            maxLength={6}
+            placeholder="123456"
+            className="tabular font-mono tracking-[0.2em]"
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+            onKeyDown={(e) => e.key === 'Enter' && address.trim() && code.length === 6 && void link()}
+          />
+        </Field>
+        <Button variant="primary" loading={linking} disabled={!address.trim() || code.length !== 6} onClick={link}>
+          <Laptop className="size-4" /> Link
+        </Button>
+      </div>
+      <p className="text-[0.85rem] text-muted">Both computers need to be on the same network (or the same Tailscale network), with the same version of Studywise. The first sync can take a minute for a big library.</p>
     </Card>
   )
 }
+
 
 // ---------------------------------------------------------------------------
 // Phone: pair with a computer and see how syncing is going.

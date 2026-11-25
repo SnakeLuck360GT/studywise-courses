@@ -300,6 +300,8 @@ export function planUsageText(pu: JobPlanUsage | undefined, short = false): stri
 export interface SyncDevice {
   id: string
   name: string
+  /** A phone, or another computer linked to this one. */
+  kind: 'phone' | 'computer'
   lastSync: string | null
   address: string | null
 }

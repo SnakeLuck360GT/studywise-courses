@@ -60,15 +60,15 @@ export class SyncClient {
     return this.call('GET', '/hello', undefined, 6000)
   }
 
-  async pair(code: string, deviceId: string, name: string): Promise<{ token: string; desktopId: string; desktopName: string }> {
-    const r = await this.call<{ token: string; desktopId: string; desktopName: string }>('POST', '/pair', { code, deviceId, name }, 10_000)
+  async pair(code: string, deviceId: string, name: string, kind: 'phone' | 'computer' = 'phone'): Promise<{ token: string; desktopId: string; desktopName: string }> {
+    const r = await this.call<{ token: string; desktopId: string; desktopName: string }>('POST', '/pair', { code, deviceId, name, kind }, 10_000)
     this.token = r.token
     return r
   }
 
   transport(): SyncTransport {
     return {
-      push: (changes: Change[]) => this.call('POST', '/push', { changes }, 120_000),
+      push: (changes: Change[], done = true) => this.call('POST', '/push', { changes, done }, 120_000),
       pull: (since: number) => this.call<ChangePage>('POST', '/pull', { since }, 120_000)
     }
   }

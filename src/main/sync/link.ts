@@ -83,7 +83,7 @@ export async function link(address: string, code: string): Promise<LinkStatus> {
   if (hello.id === me) throw new Error('That’s this computer’s own address. Type the other computer’s address, shown in its Settings → Devices.')
   // Each pair of computers links one way only: if it's paired here, it already syncs with this one.
   if (getPeer(db(), hello.id)?.token_hash) throw new Error(`${hello.name} is already linked to this computer, so the two already sync.`)
-  const r = await c.pair(code.trim(), me, hostname())
+  const r = await c.pair(code.trim(), me, hostname(), 'computer')
   const prev = linked()
   if (prev && prev.peerId !== r.desktopId) removePeer(db(), prev.peerId)
   setSecret(TOKEN_KEY, r.token)

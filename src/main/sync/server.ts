@@ -31,6 +31,8 @@ import type { SyncDevice, SyncStatus } from '@shared/types'
 export const DEFAULT_PORT = 47821
 const MAX_BODY = 64 * 1024 * 1024
 const PAIR_MINUTES = 10
+/** Which paired devices are computers (Settings → Devices shows them with a laptop). */
+const KINDS_KEY = 'sync.deviceKinds'
 
 /** Channels the phone may not run here: they open desktop dialogs, touch secrets, or have a phone version. */
 const BLOCKED = new Set([
@@ -118,6 +120,7 @@ export function lanAddresses(): string[] {
 
 export function syncStatus(): SyncStatus {
   const d = db()
+  const kinds = repo.getSetting<Record<string, string>>(KINDS_KEY, {})
   return {
     enabled: repo.getSetting<boolean>('sync.enabled', false),
     running: !!server?.listening,
@@ -129,7 +132,7 @@ export function syncStatus(): SyncStatus {
     pairExpires: pairing && pairing.expires > Date.now() ? new Date(pairing.expires).toISOString() : null,
     devices: listPeers(d)
       .filter((p) => p.token_hash)
-      .map((p): SyncDevice => ({ id: p.id, name: p.name, lastSync: p.last_sync, address: p.address })),
+      .map((p): SyncDevice => ({ id: p.id, name: p.name, kind: kinds[p.id] === 'computer' ? 'computer' : 'phone', lastSync: p.last_sync, address: p.address })),
     error: lastError
   }
 }
@@ -244,7 +247,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (route === 'GET /hello') return send(res, 200, { app: 'studywise', name: hostname(), id: deviceId(db()), pairing: !!(pairing && pairing.expires > Date.now()) })
 
     if (route === 'POST /pair') {
-      const b = await readJson<{ code?: string; deviceId?: string; name?: string }>(req)
+      const b = await readJson<{ code?: string; deviceId?: string; name?: string; kind?: string }>(req)
       if (!pairing || pairing.expires < Date.now()) return send(res, 403, { error: 'Pairing isn’t open. On that computer, open Settings → Devices and press Pair a device.' })
       if (String(b.code ?? '').trim() !== pairing.code || !b.deviceId) {
         if (++pairing.misses >= MAX_MISSES) {
@@ -255,6 +258,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
       const token = randomBytes(32).toString('base64url')
       savePeer(db(), { id: b.deviceId, name: String(b.name || 'Phone').slice(0, 80), token_hash: sha(token), address: req.socket.remoteAddress?.replace(/^::ffff:/, '') ?? null })
+      // Remembered so Synced devices shows a computer as one (older phones don't say).
+      const kinds = repo.getSetting<Record<string, string>>(KINDS_KEY, {})
+      repo.setSetting(KINDS_KEY, { ...kinds, [b.deviceId]: b.kind === 'computer' ? 'computer' : 'phone' })
       pairing = null
       onSynced?.(0)
       return send(res, 200, { token, desktopId: deviceId(db()), desktopName: hostname() })
@@ -264,8 +270,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!peer) return send(res, 401, { error: 'This device isn’t paired with this computer any more. Pair it again.' })
 
     if (route === 'POST /push') {
-      const b = await readJson<{ changes: Parameters<typeof applyChanges>[1] }>(req)
-      const r = applyChanges(db(), b.changes ?? [])
+      const b = await readJson<{ changes: Parameters<typeof applyChanges>[1]; done?: boolean }>(req)
+      // Rows waiting for a parent from a later page are tidied up after the last one (older phones send every page as the last).
+      const r = applyChanges(db(), b.changes ?? [], { final: b.done !== false })
       if (r.applied) {
         // Course files added on a linked computer arrive with its folders in their paths.
         localizeCoursePaths(db())

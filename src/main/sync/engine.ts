@@ -125,42 +125,71 @@ export function changesSince(db: SqlDb, since: number, opts: { onlyOrigin?: stri
 }
 
 /** True when the incoming change should replace what this device has. */
-function wins(c: Change, local: { at: string; origin: string } | undefined): boolean {
+/** True when the incoming change should replace what this device has. */
+function wins(c: Change, local: { at: string; origin: string; deleted: number } | undefined, missing: () => boolean): boolean {
   if (!local) return true
   if (c.at !== local.at) return c.at > local.at
-  return c.origin > local.origin
+  if (c.origin !== local.origin) return c.origin > local.origin
+  // The version logged here, but the row isn't here: an older sync dropped it
+  // (a child applied before its parent arrived), so put it back.
+  return !c.deleted && !!c.row && !local.deleted && missing()
 }
 
 /**
  * Applies another device's changes. Each is kept only if it's newer than this
- * device's own change to that row. Foreign keys are checked at the end, so the
- * order inside a batch doesn't matter; a row whose parent was deleted here is
- * removed (or its link cleared, for ON DELETE SET NULL).
+ * device's own change to that row.
+ *
+ * A sync comes in pages, in the order rows last changed, so a topic can arrive
+ * pages before its course (studying touches the course). Foreign keys aren't
+ * enforced while a page goes in, so a child waits for its parent instead of
+ * being dropped. After the last page (`final`, the default) a row whose parent
+ * still isn't here is removed (or its link cleared, for ON DELETE SET NULL).
  */
-export function applyChanges(db: SqlDb, changes: Change[]): { applied: number; skipped: number } {
+export function applyChanges(db: SqlDb, changes: Change[], opts: { final?: boolean } = {}): { applied: number; skipped: number } {
+  const final = opts.final ?? true
   let applied = 0
   let skipped = 0
-  if (!changes.length) return { applied, skipped }
-  db.transaction(() => {
-    db.exec('PRAGMA defer_foreign_keys = ON')
-    db.prepare("UPDATE sync_meta SET value = '1' WHERE key = 'applying'").run()
-    const getLog = db.prepare('SELECT at, origin FROM sync_log WHERE tbl = ? AND pk = ?')
-    const putLog = db.prepare('INSERT OR REPLACE INTO sync_log (tbl, pk, seq, at, deleted, origin) VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM sync_log), ?, ?, ?)')
-    for (const c of changes) {
-      const t = syncTable(c.tbl)
-      if (!t || !wins(c, getLog.get(c.tbl, c.pk) as { at: string; origin: string } | undefined)) {
-        skipped++
-        continue
+  if (!changes.length) {
+    if (final) finishApply(db)
+    return { applied, skipped }
+  }
+  // Only changeable outside a transaction; nothing else runs in between (this is synchronous).
+  const fkOn = (db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number } | undefined)?.foreign_keys === 1
+  if (fkOn) db.exec('PRAGMA foreign_keys = OFF')
+  try {
+    db.transaction(() => {
+      db.prepare("UPDATE sync_meta SET value = '1' WHERE key = 'applying'").run()
+      const getLog = db.prepare('SELECT at, origin, deleted FROM sync_log WHERE tbl = ? AND pk = ?')
+      const putLog = db.prepare('INSERT OR REPLACE INTO sync_log (tbl, pk, seq, at, deleted, origin) VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM sync_log), ?, ?, ?)')
+      for (const c of changes) {
+        const t = syncTable(c.tbl)
+        const missing = () => !db.prepare(`SELECT 1 FROM ${t!.name} WHERE ${where(t!)}`).get(...keyParts(c.pk))
+        if (!t || !wins(c, getLog.get(c.tbl, c.pk) as { at: string; origin: string; deleted: number } | undefined, missing)) {
+          skipped++
+          continue
+        }
+        // A deleted parent's children go after the last page (fixForeignKeys), as ON DELETE would have done.
+        if (c.deleted || !c.row) db.prepare(`DELETE FROM ${t.name} WHERE ${where(t)}`).run(...keyParts(c.pk))
+        else upsert(db, t, c.row)
+        putLog.run(c.tbl, c.pk, c.at, c.deleted || !c.row ? 1 : 0, c.origin)
+        applied++
       }
-      if (c.deleted || !c.row) db.prepare(`DELETE FROM ${t.name} WHERE ${where(t)}`).run(...keyParts(c.pk))
-      else upsert(db, t, c.row)
-      putLog.run(c.tbl, c.pk, c.at, c.deleted || !c.row ? 1 : 0, c.origin)
-      applied++
-    }
+      if (final) fixForeignKeys(db)
+      db.prepare("UPDATE sync_meta SET value = '0' WHERE key = 'applying'").run()
+    })()
+  } finally {
+    if (fkOn) db.exec('PRAGMA foreign_keys = ON')
+  }
+  return { applied, skipped }
+}
+
+/** After the last page: rows whose parent never came are removed (or their link cleared). */
+export function finishApply(db: SqlDb): void {
+  db.transaction(() => {
+    db.prepare("UPDATE sync_meta SET value = '1' WHERE key = 'applying'").run()
     fixForeignKeys(db)
     db.prepare("UPDATE sync_meta SET value = '0' WHERE key = 'applying'").run()
   })()
-  return { applied, skipped }
 }
 
 function upsert(db: SqlDb, t: SyncTable, row: Record<string, unknown>): void {
@@ -202,9 +231,17 @@ function fixForeignKeys(db: SqlDb): void {
 // One sync, from the side that starts it (the phone)
 
 export interface SyncTransport {
-  push(changes: Change[]): Promise<unknown>
+  /** done: the last page of this push, so the peer can tidy up rows whose parent never came. */
+  push(changes: Change[], done?: boolean): Promise<unknown>
   pull(since: number): Promise<ChangePage>
 }
+
+/**
+ * Bumped when older versions could have lost rows, so each device sends and
+ * fetches everything once more (rows already there are skipped, missing ones
+ * come back). 1: children applied a page before their parent were dropped.
+ */
+const RESYNC = 1
 
 export interface SyncResult {
   sent: number
@@ -221,21 +258,25 @@ export interface SyncResult {
 export async function syncWith(db: SqlDb, peerId: string, transport: SyncTransport, opts: { relay?: boolean } = {}): Promise<SyncResult> {
   const me = deviceId(db)
   let peer = getPeer(db, peerId) ?? savePeer(db, { id: peerId })
+  const resyncKey = `resync:${peerId}`
+  if (Number(meta(db, resyncKey) ?? 0) < RESYNC) peer = savePeer(db, { id: peerId, sent_seq: 0, got_seq: 0 })
   let sent = 0
   let received = 0
   for (;;) {
     const page = changesSince(db, peer.sent_seq, opts.relay ? { skipOrigin: peerId } : { onlyOrigin: me })
-    if (page.changes.length) await transport.push(page.changes)
+    // The last page always goes (even empty, after others), so the peer knows the push is complete.
+    if (page.changes.length || (!page.more && sent)) await transport.push(page.changes, !page.more)
     sent += page.changes.length
     peer = savePeer(db, { id: peerId, sent_seq: page.next })
     if (!page.more) break
   }
   for (;;) {
     const page = await transport.pull(peer.got_seq)
-    received += applyChanges(db, page.changes).applied
+    received += applyChanges(db, page.changes, { final: !page.more }).applied
     peer = savePeer(db, { id: peerId, got_seq: page.next })
     if (!page.more) break
   }
+  setMeta(db, resyncKey, String(RESYNC))
   savePeer(db, { id: peerId, last_sync: new Date().toISOString() })
   return { sent, received }
 }
