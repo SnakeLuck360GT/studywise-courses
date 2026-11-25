@@ -104,6 +104,7 @@ export const CHANNELS = [
   'market.remove',
   'market.download',
   'market.similar',
+  'market.claim',
   'stats.home',
   'stats.addTime',
   'sync.status',

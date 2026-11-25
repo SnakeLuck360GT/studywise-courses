@@ -8,7 +8,7 @@ import { toast, useStore } from './store'
  * goes (one of your courses, or a new one), import it and open that course.
  * With `courseId` it goes straight into that course after a confirm.
  */
-export async function importSharedWeek(opts: { file?: string; courseId?: string } = {}): Promise<void> {
+export async function importSharedWeek(opts: { file?: string; courseId?: string; ownRemoteId?: string } = {}): Promise<void> {
   try {
     const p = await api.courses.previewWeek(opts.file ? { file: opts.file } : undefined)
     if (!p) return
@@ -28,7 +28,12 @@ export async function importSharedWeek(opts: { file?: string; courseId?: string 
       courseId = choice || null
     }
     const r = await api.courses.importWeek({ file: p.file, courseId })
-    toast(`Added ${p.week}: ${r.topics} topic${r.topics === 1 ? '' : 's'} and ${r.cards} card${r.cards === 1 ? '' : 's'}`, 'good')
+    // One of your own published weeks: linked back to its marketplace copy (unless the week it came from is still here).
+    const linked = opts.ownRemoteId ? await api.market.claim({ weekId: r.weekId, remoteId: opts.ownRemoteId }).catch(() => false) : false
+    toast(
+      `Added ${p.week}: ${r.topics} topic${r.topics === 1 ? '' : 's'} and ${r.cards} card${r.cards === 1 ? '' : 's'}${linked ? '. It’s still on the marketplace: publishing it again updates that copy.' : ''}`,
+      'good'
+    )
     useStore.getState().bump()
     useStore.getState().go({ name: 'course', id: r.courseId })
   } catch (e) {

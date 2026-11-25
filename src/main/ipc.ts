@@ -565,7 +565,9 @@ export const handlers = {
       const file = await market.download(i.id)
       return { file, ...(await weekShare.previewWeek(file)) }
     }),
-    similar: h(z.object({ weekId: id }), (i) => market.similar(i.weekId))
+    similar: h(z.object({ weekId: id }), (i) => market.similar(i.weekId)),
+    /** One of your own published weeks, added back to your courses: link it to its marketplace copy. */
+    claim: h(z.object({ weekId: id, remoteId: id }), (i) => market.claimOwnWeek(i.weekId, i.remoteId))
   },
   stats: {
     /** Time studied, topics and card stats for the home page. */

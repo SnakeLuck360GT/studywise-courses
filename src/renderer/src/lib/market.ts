@@ -14,11 +14,11 @@ export function modelsText(models: MarketModel[]): string {
 
 export const weekSummary = (w: MarketWeek) => `${w.writtenCount} of ${plural(w.topicCount, 'topic')} written · ${plural(w.cardCount, 'flashcard')} · ${plural(w.files.length, 'file')}`
 
-/** Download a published week, then ask which course it goes in (like a shared week). */
-export async function addMarketWeek(remoteWeekId: string, courseId?: string): Promise<void> {
+/** Download a published week (anyone's, or one of yours), then ask which course it goes in (like a shared week). */
+export async function addMarketWeek(remoteWeekId: string, courseId?: string, mine = false): Promise<void> {
   try {
     const { file } = await api.market.download({ id: remoteWeekId })
-    await importSharedWeek({ file, courseId })
+    await importSharedWeek({ file, courseId, ownRemoteId: mine ? remoteWeekId : undefined })
   } catch (e) {
     toast(errorText(e), 'bad')
   }

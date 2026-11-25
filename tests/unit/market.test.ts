@@ -355,6 +355,46 @@ describe('public and private', () => {
     }
   })
 
+  it('a week of yours added back from the marketplace is linked to its copy there, unless the original is still here', async () => {
+    const market = await import('../../src/main/services/market')
+    const repo = await import('../../src/main/db/repo')
+    const { setSecret } = await import('../../src/main/secrets')
+    const course = svc.createCourse({ name: 'Mine again 101', level: '' })
+    const original = svc.addWeek(course.id, 'Week 1')
+    const copy = svc.addWeek(course.id, 'Week 1 (2)')
+    const now = new Date().toISOString()
+    for (const w of [original, copy])
+      getDb().prepare("INSERT INTO topics (id, course_id, week_id, key, position, plan, status, content, updated_at) VALUES (?, ?, ?, 't1', 0, '{}', 'ready', 'Notes', ?)").run(`topic-${w.id}`, course.id, w.id, now)
+    repo.setSetting('market.url', 'https://market.test')
+    setSecret('secret.marketKey', 'swm_test')
+    repo.setSetting('market.published', { [original.id]: 'remote-mine' })
+    // Added from the marketplace, so it counts as imported for now.
+    repo.setSetting('market.importedWeeks', [copy.id])
+    const week = (id: string) => ({ id, courseId: 'c', label: 'Week 1', number: 1, author: 'me', topics: [], topicCount: 1, writtenCount: 1, cardCount: 0, files: [], size: 1, plannedWith: null, writtenWith: [], downloads: 0, createdAt: now, updatedAt: now, mine: true, courseName: 'Mine again 101' })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).endsWith('/api/mine')) return new Response(JSON.stringify({ weeks: [week('remote-mine')] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      throw new Error(`unexpected ${url}`)
+    })
+    try {
+      // The week it was published from is still here: the copy is just a copy.
+      expect(await market.claimOwnWeek(copy.id, 'remote-mine')).toBe(false)
+      expect(market.publishedWeeks()).toEqual({ [original.id]: 'remote-mine' })
+      // Not yours on the site: never linked.
+      expect(await market.claimOwnWeek(copy.id, 'remote-someone-else')).toBe(false)
+
+      // The original is gone (deleted, or you're on another computer): the copy takes over.
+      svc.deleteWeek(original.id)
+      expect(await market.claimOwnWeek(copy.id, 'remote-mine')).toBe(true)
+      expect(market.publishedWeeks()).toEqual({ [copy.id]: 'remote-mine' })
+      expect(repo.getSetting<string[]>('market.importedWeeks', [])).not.toContain(copy.id)
+      // Up to date with what's on the marketplace, so Publish all skips it.
+      expect((await market.publishPlan(course.id)).find((x) => x.weekId === copy.id)?.state).toBe('same')
+    } finally {
+      fetchMock.mockRestore()
+      setSecret('secret.marketKey', null)
+    }
+  })
+
   it('leaves whether a week is private out of the shared file', async () => {
     const course = svc.createCourse({ name: 'Share 101', level: '' })
     const w = svc.addWeek(course.id, 'Week 1', { private: true })
