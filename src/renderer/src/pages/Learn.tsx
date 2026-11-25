@@ -5,6 +5,7 @@ import { reshuffleLearnQuestion, type LearnQuestion, type LearnAnswer, type Mark
 import { insertRetry } from '@shared/retry'
 import { QUESTION_LABELS, QUESTION_TYPES, type LearnSettings, type CustomAction, type QuestionType } from '@shared/types'
 import { useStore, toast } from '../lib/store'
+import { useStudySession } from '../lib/lastSession'
 import { api, errorText } from '../lib/api'
 import { useCommands } from '../lib/commands'
 import { QuestionView, SUBMIT_EVENT } from '../learn/Questions'
@@ -50,6 +51,8 @@ export function Learn({ deckId, cardIds }: { deckId: string; cardIds?: string[] 
   const [deckName, setDeckName] = useState('')
   const loading = useRef(new Set<number>())
   const [restartKey, setRestartKey] = useState(0)
+  // Home offers Continue for a Learn session you quit before the end (it starts a new one on the deck).
+  useStudySession(session && !error ? { name: 'learn', deckId, ...(cardIds?.length ? { cardIds } : {}) } : null, deckName, !!finished)
 
   const loadBatch = useCallback(
     async (sid: string, b: number) => {

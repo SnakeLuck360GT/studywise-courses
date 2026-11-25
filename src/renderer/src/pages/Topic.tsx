@@ -20,6 +20,7 @@ import {
 import type { Mark } from '@shared/questions'
 import type { Card } from '@shared/types'
 import { useStore, toast, rememberCoursesPlace } from '../lib/store'
+import { useStudySession } from '../lib/lastSession'
 import { IS_MOBILE } from '../lib/platform'
 import { api, errorText, streamCall } from '../lib/api'
 import { Markdown } from '../components/Markdown'
@@ -208,6 +209,8 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
   }, [topic, steps, at, slots, sessionKey])
 
   const step = steps[at]
+  // Home offers Continue for a topic (or test) left partway through.
+  useStudySession(topic?.content ? { name: 'topic', id, ...(test ? { test: true } : {}) } : null, topic?.content?.title ?? '', step?.kind === 'summary')
   const slot = slots[at] ?? emptySlot()
   const patch = (i: number, p: Partial<Slot>) => setSlots((cur) => ({ ...cur, [i]: { ...(cur[i] ?? emptySlot()), ...p } }))
 

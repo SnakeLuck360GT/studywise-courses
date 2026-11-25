@@ -197,4 +197,6 @@ Other scripts: `npm run ai:real-check` (one real call per task, plus notes and c
 
 ## Time studied and the home page
 
+The app always opens on the home page. If you quit (or leave) partway through a topic, a topic test, a Learn session or a flashcard review, the home page shows **Pick up where you left off** with **Continue** (or Enter), which takes you back: a topic to the exact step you saved at, a review to the cards still due, and Learn to a new set of questions on the same deck (a Learn session itself isn't kept). Finishing the session forgets it, and so does the × or a topic, deck or due cards that are gone. It's remembered per device (`ui.lastSession`, `src/renderer/src/lib/lastSession.ts`).
+
 While a topic, flashcards, Learn or a note is open, the window is in front and you've touched the keyboard, mouse or screen in the last three minutes, the time is counted and saved about once a minute (one row per day per device, so it syncs between the phone and the computer without clashing). The home page shows today's time with the last seven days as bars, then total time, the last 30 days, your study streak (days with studying or reviews), topics done, topic questions answered and how many were right first time, your topic test average, cards reviewed, and retention (reviews in the last 30 days not rated Again).

@@ -5,6 +5,7 @@ import type { Card as CardT, ReviewState } from '@shared/types'
 import { schedule, newState, withDefaults, DEFAULT_SCHEDULER, type SchedulerKind } from '@shared/scheduler'
 import { insertRetry } from '@shared/retry'
 import { useStore, toast } from '../lib/store'
+import { useStudySession } from '../lib/lastSession'
 import { IS_MOBILE } from '../lib/platform'
 import { api, errorText } from '../lib/api'
 import { useCommands } from '../lib/commands'
@@ -41,6 +42,8 @@ export function Flashcards({ deckId, mode, courseId }: { deckId: string; mode: '
   const [editing, setEditing] = useState<CardDraft | null>(null)
   const [deckName, setDeckName] = useState('')
   const [kind, setKind] = useState<SchedulerKind>(DEFAULT_SCHEDULER)
+  // Home offers Continue for a review left with cards still to go.
+  useStudySession(queue ? { name: 'flashcards', deckId, mode, ...(courseId ? { courseId } : {}) } : null, deckName, !!queue && i >= queue.length)
   useEffect(() => void api.settings.all().then((s) => setKind((s['review.scheduler'] as SchedulerKind) ?? DEFAULT_SCHEDULER)), [])
 
   useEffect(() => {

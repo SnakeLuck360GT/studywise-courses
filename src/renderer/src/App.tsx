@@ -71,25 +71,7 @@ export function App() {
       applyTheme(t)
       const z = Number(s['ui.zoom'] ?? 1)
       setZoom(z)
-      const last = s['ui.lastRoute'] as Route | undefined
-      if (last && (last.name === 'course' || last.name === 'week')) {
-        try {
-          const c = await api.courses.get({ id: last.name === 'course' ? last.id : last.courseId })
-          if (last.name === 'week' && !c.weeks.some((w) => w.id === last.weekId)) throw new Error('gone')
-          useStore.setState({ route: last })
-        } catch {
-          /* gone */
-        }
-      }
-      if (last && (last.name === 'deck' || last.name === 'notes')) {
-        try {
-          if (last.name === 'deck') await api.decks.get({ id: last.id })
-          if (last.name === 'notes' && last.id) await api.notes.get({ id: last.id })
-          useStore.setState({ route: last })
-        } catch {
-          /* gone */
-        }
-      }
+      // The app always opens on the home page; a study session you quit partway through shows Continue there.
       useStore.getState().setClaude(await api.claude.status())
       useStore.getState().setAi(await api.ai.status())
       useStore.getState().setJobs(await api.jobs.list())
