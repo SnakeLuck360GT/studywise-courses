@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Studywise</title>
-    <meta name="description" content="A flashcard and notes app for Mac and Windows. Give it a lecture PDF and it makes notes and flashcards, then quizzes you." />
+    <title>Studywise Courses</title>
+    <meta name="description" content="A study app for Mac, Windows and Android. Give it your lecture slides and it turns each week into short lessons, practice questions and flashcards." />
     <link rel="icon" type="image/png" href="img/icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -13,68 +13,86 @@
   </head>
   <body>
     <header class="top">
-      <a class="brand" href="#"><img src="img/icon.png" alt="" width="28" height="28" /> Studywise</a>
+      <a class="brand" href="#"><img src="img/icon.png" alt="" width="28" height="28" /> Studywise Courses</a>
       <nav>
         <a href="#features">Features</a>
         <a href="#setup">Setup</a>
-        <a href="https://github.com/SnakeLuck360GT/studywise">GitHub</a>
+        <a href="https://github.com/SnakeLuck360GT/studywise-courses">GitHub</a>
       </nav>
     </header>
 
     <main>
       <section class="hero">
-        <img class="hero-icon" src="img/icon.png" alt="Studywise icon" width="96" height="96" />
-        <h1>Turn your lecture PDFs into flashcards.</h1>
-        <p class="lead">Studywise makes notes and flashcards from your lecture slides, then quizzes you and marks your answers.</p>
+        <img class="hero-icon" src="img/icon.png" alt="Studywise Courses icon" width="96" height="96" />
+        <h1>Turn your lectures into a course.</h1>
+        <p class="lead">Give it your slides, transcripts and readings. Studywise splits each week into topics and teaches them in short lessons, with practice questions and flashcards.</p>
         <div class="buttons">
-          <a class="btn primary" href="https://github.com/SnakeLuck360GT/studywise/releases/latest/download/Studywise.dmg">Download for Mac</a>
-          <a class="btn" href="https://github.com/SnakeLuck360GT/studywise/releases/latest/download/Studywise-Setup.exe">Download for Windows</a>
+          <a class="btn primary" href="https://github.com/SnakeLuck360GT/studywise-courses/releases/latest/download/Studywise-Courses.dmg">Download for Mac</a>
+          <a class="btn" href="https://github.com/SnakeLuck360GT/studywise-courses/releases/latest/download/Studywise-Courses-Setup.exe">Download for Windows</a>
         </div>
-        <p class="small">Free. Needs a Claude account and <a href="#setup">Claude Code</a>.</p>
+        <p class="small">
+          Free. Also on <a href="https://github.com/SnakeLuck360GT/studywise-courses/releases/latest/download/Studywise-android.apk">Android</a>. Needs a Claude account and <a href="#setup">Claude Code</a>, or Ollama.
+        </p>
       </section>
 
       <figure class="shot main-shot">
-        <img src="img/home.png" alt="The Studywise home screen" />
+        <img src="img/home.png" alt="The Studywise Courses home screen" />
       </figure>
 
       <section id="features" class="features">
         <div class="feature">
           <div>
-            <h2>Notes from your slides</h2>
-            <p>Drop in a PDF and get clear notes in a casual, exam-focused style. It reads the tables and diagrams too, not just the text.</p>
+            <h2>A course for every module</h2>
+            <p>Add each week's slides, lecture transcripts and readings. Studywise plans the week into topics, and you can see at a glance what's written, what's done and what's next.</p>
           </div>
-          <img src="img/notes.png" alt="Notes generated from a lecture" />
+          <img src="img/course.png" alt="A course with its weeks" />
         </div>
         <div class="feature">
           <div>
-            <h2>Flashcards you can check</h2>
-            <p>Cards come out in the StudySmarter text format. You get to review them, fix any that look wrong, and save the rest to a deck.</p>
+            <h2>Learn a bit at a time</h2>
+            <p>Each topic is taught in short sections: a screen of notes, with the slide's figure if it helps, then a few quick questions before the next bit. Take the topic's test when you're ready.</p>
           </div>
-          <img src="img/preview.png" alt="Reviewing generated flashcards" />
+          <img src="img/topic.png" alt="Notes in a topic" />
         </div>
         <div class="feature">
           <div>
-            <h2>Learn mode</h2>
-            <p>Each card turns into a question: multiple choice, true or false, fill in the blank, write your own answer, and more. Written answers get a mark out of 10.</p>
+            <h2>Questions that make you think</h2>
+            <p>Multiple choice, true or false, fill the gap, put in order, sort into groups, match up, and explain in your own words, with your written answers marked and explained.</p>
           </div>
-          <img src="img/learn-feedback.png" alt="A Learn question with feedback" />
+          <img src="img/match-up.png" alt="A match-up question" />
         </div>
         <div class="feature">
           <div>
-            <h2>Spaced repetition</h2>
-            <p>Flip cards and rate them. Studywise works out when you should see each one again, and shows what's due each day.</p>
+            <h2>Flashcards, red, yellow, green</h2>
+            <p>Go through cards in sets of 15 and mark each one red, yellow or green. Two greens and it's learnt; after that it comes back after 1 day, then 3, then 7, further apart each time you remember it.</p>
           </div>
           <img src="img/flashcards.png" alt="Flashcard review" />
+        </div>
+        <div class="feature">
+          <div>
+            <h2>Your own notes</h2>
+            <p>Write notes in Markdown, sorted into folders, with maths, tables and diagrams. Turn any note into flashcards with one click.</p>
+          </div>
+          <img src="img/notes.png" alt="The notes editor" />
+        </div>
+        <div class="feature">
+          <div>
+            <h2>Share weeks with your course</h2>
+            <p>Publish the weeks you've made so others on the same module can add them for free, without generating anything. Before you plan a week, Studywise checks whether someone has already made it from the same slides.</p>
+          </div>
+          <img src="img/marketplace.png" alt="A course on the marketplace" />
         </div>
       </section>
 
       <section class="list">
         <h2>Also</h2>
         <ul>
-          <li>Imports and exports StudySmarter .txt and .xlsx files</li>
-          <li>Explain button on any card or note</li>
-          <li>Edit every AI prompt, and pick which Claude model each task uses</li>
-          <li>Lots of keyboard shortcuts. Press ? in the app to see them all</li>
+          <li>An Android app that syncs with your computer over Wi‑Fi and works offline</li>
+          <li>Make flashcards from a PDF, your notes or pasted text, or import Anki decks</li>
+          <li>End-of-week tests, quick reviews and an Explain button on anything</li>
+          <li>Offline mode: study everything you've made without AI</li>
+          <li>Works from the keyboard: arrow keys, Enter, and shortcuts for everything (press ? in the app)</li>
+          <li>Edit every AI prompt, and pick which model each task uses</li>
           <li>Everything is stored on your computer</li>
         </ul>
       </section>
@@ -86,8 +104,9 @@
             Install Claude Code and log in:
             <pre><code>npm install -g @anthropic-ai/claude-code
 claude</code></pre>
+            Or use Ollama: in Settings → AI provider pick Ollama and paste an API key from <a href="https://ollama.com/settings/keys">ollama.com</a>.
           </li>
-          <li>Download Studywise and open it.</li>
+          <li>Download Studywise Courses and open it. It tells you when there's a new version.</li>
         </ol>
         <p>The app isn't signed yet. On a Mac, right-click it and pick Open the first time. On Windows, click More info, then Run anyway.</p>
         <p class="small">Studywise uses your own Claude account through Claude Code, under <a href="https://www.anthropic.com/legal/consumer-terms">Anthropic's terms</a>. It isn't affiliated with Anthropic or StudySmarter.</p>
@@ -95,8 +114,9 @@ claude</code></pre>
     </main>
 
     <footer>
-      <a href="https://github.com/SnakeLuck360GT/studywise">Source on GitHub</a>
-      <a href="https://github.com/SnakeLuck360GT/studywise/releases">All releases</a>
+      <a href="https://github.com/SnakeLuck360GT/studywise-courses">Source on GitHub</a>
+      <a href="https://github.com/SnakeLuck360GT/studywise-courses/releases">All releases</a>
+      <a href="https://github.com/SnakeLuck360GT/studywise-courses/pulls">Add a feature</a>
     </footer>
   </body>
 </html>
