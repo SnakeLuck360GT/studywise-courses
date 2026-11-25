@@ -22,7 +22,7 @@ import * as course from './services/course'
 import * as noteOrder from './services/noteOrder'
 import * as weekShare from './services/weekShare'
 import * as market from './services/market'
-import { CourseQuestion, NOTE_LEVELS } from '@shared/course'
+import { CARD_CUTS, COURSE_FOCUSES, CourseQuestion, NOTE_LEVELS, WEEK_TEST_LEVELS } from '@shared/course'
 import * as io from './importexport'
 import { backupLibrary, restoreLibrary } from './backup'
 import * as library from './library'
@@ -404,12 +404,14 @@ export const handlers = {
         weekLabel: z.string().max(100).default(''),
         files: z.array(z.string()).max(200).default([]),
         note: z.string().max(4000).default(''),
+        focus: z.array(z.enum(COURSE_FOCUSES)).max(COURSE_FOCUSES.length).default([]),
         private: z.boolean().default(false),
         weekPrivate: z.boolean().optional()
       }),
       async (i) => {
       const c = course.createCourse(i)
       if (i.note.trim()) course.setCourseNote(c.id, i.note)
+      if (i.focus.length) course.setCourseFocus(c.id, i.focus)
       const w = course.addWeek(c.id, i.weekLabel, { private: i.weekPrivate })
       if (i.files.length) await course.addFiles(w.id, i.files)
       return { ...course.getCourse(c.id), firstWeekId: w.id }
@@ -442,11 +444,32 @@ export const handlers = {
       }
       return true
     }),
-    plan: h(z.object({ weekId: id, instructions: z.string().max(4000).default('') }), (i) => {
+    /** Plan a week's topics; `test`: also write an end-of-week test at that difficulty, once the topics are planned. */
+    plan: h(z.object({ weekId: id, instructions: z.string().max(4000).default(''), test: z.enum(WEEK_TEST_LEVELS).nullable().default(null) }), (i) => {
       const c = course.getCourse(course.getCourseIdForWeek(i.weekId))
       const w = c.weeks.find((x) => x.id === i.weekId)!
-      return startJob('course_outline', `Plan: ${c.name} · ${w.label}`, (ctx) => course.planWeek(i.weekId, ctx, i.instructions))
+      return startJob('course_outline', `Plan: ${c.name} · ${w.label}`, async (ctx) => {
+        const r: { topics: number; test?: number; testError?: string } = await course.planWeek(i.weekId, ctx, i.instructions)
+        if (!i.test) return r
+        // The topics are in either way: a test that doesn't work out is reported, not a failed plan.
+        try {
+          r.test = (await course.writeWeekTest(i.weekId, ctx, i.test)).questions
+        } catch (e) {
+          if (ctx.signal.aborted) throw e
+          r.testError = (e as Error).message
+        }
+        return r
+      })
     }),
+    /** Write (or write again) a week's end-of-week test: multiple choice, at a difficulty. */
+    writeWeekTest: h(z.object({ weekId: id, difficulty: z.enum(WEEK_TEST_LEVELS), instructions: z.string().max(4000).default('') }), (i) => {
+      const c = course.getCourse(course.getCourseIdForWeek(i.weekId))
+      const w = c.weeks.find((x) => x.id === i.weekId)!
+      return startJob('course_week_test', `Test: ${c.name} · ${w.label}`, (ctx) => course.writeWeekTest(i.weekId, ctx, i.difficulty, i.instructions))
+    }),
+    /** Save a go at a week's test (the last score, and the best). */
+    weekTestScore: h(z.object({ weekId: id, score: z.number().min(0), total: z.number().int().min(1) }), (i) => course.saveWeekTestScore(i.weekId, i.score, i.total)),
+    deleteWeekTest: h(z.object({ weekId: id }), (i) => course.deleteWeekTest(i.weekId)),
     /**
      * Add new notes to a planned week: files, and/or text you paste (saved as a
      * file in the week). Claude works what's new into the week's topics.
@@ -487,6 +510,8 @@ export const handlers = {
     setLevel: h(z.object({ topicId: id, level: z.enum(NOTE_LEVELS) }), (i) => course.setTopicLevel(i.topicId, i.level)),
     /** Your note to the AI about the course, put into every prompt for it. */
     setNote: h(z.object({ courseId: id, note: z.string().max(4000) }), (i) => course.setCourseNote(i.courseId, i.note)),
+    /** What kind of course it is (theory, practical/coding, formula/method heavy): every prompt tailors to it. */
+    setFocus: h(z.object({ courseId: id, focus: z.array(z.enum(COURSE_FOCUSES)).max(COURSE_FOCUSES.length) }), (i) => course.setCourseFocus(i.courseId, i.focus)),
     topic: h(z.object({ id }), (i) => course.getTopic(i.id)),
     rateCard: h(z.object({ topicId: id, front: z.string().min(1), cardId: z.string().optional(), rating: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]) }), (i) =>
       course.rateTopicCard(i.topicId, i.front, i.rating, i.cardId)
@@ -555,7 +580,8 @@ export const handlers = {
       }
     ),
     /** Which of a week's (or a topic's) recall cards aren't worth keeping. Only card text is sent. */
-    suggestTrim: h(z.union([z.object({ weekId: id, topicId: z.string().optional() }), z.object({ courseId: id })]), (i) => course.suggestTrim(i)),
+    /** `cut`: also cut the cards down to the key content, by that much. */
+    suggestTrim: h(z.union([z.object({ weekId: id, topicId: z.string().optional(), cut: z.enum(CARD_CUTS).optional() }), z.object({ courseId: id, cut: z.enum(CARD_CUTS).optional() })]), (i) => course.suggestTrim(i)),
     /** Remove recall cards you picked, from the deck and from their topics. */
     removeCards: h(z.object({ cardIds: z.array(id).max(2000) }), (i) => course.removeTopicCards(i.cardIds)),
     /** Turn a week's recall on or off (its cards stay). */

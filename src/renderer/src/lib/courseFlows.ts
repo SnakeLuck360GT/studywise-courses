@@ -1,7 +1,7 @@
-import { NOTE_LEVEL_INFO, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
+import { NOTE_LEVEL_INFO, WEEK_TEST_INFO, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
 import { duplicateWeekGroups } from '@shared/weekMerge'
 import { api, errorText } from './api'
-import { askPlan, askWrite, chooseDialog, confirmDialog } from './dialogs'
+import { askPlan, askWeekTest, askWrite, chooseDialog, confirmDialog } from './dialogs'
 import { toast, useStore } from './store'
 import { askAboutMatches } from '../components/MarketMatches'
 import { useMarketWeekHere } from './market'
@@ -33,14 +33,14 @@ export async function offerPlan(week: { id: string; label: string; topics?: { st
   ]
     .filter(Boolean)
     .join(' ')
-  const instructions = await askPlan(topics ? `Plan ${week.label} again?` : `Plan ${week.label} now?`, {
+  const r = await askPlan(topics ? `Plan ${week.label} again?` : `Plan ${week.label} now?`, {
     message,
     confirmText: topics ? 'Plan again' : 'Plan topics',
     danger: written > 0
   })
-  if (instructions === null) return false
+  if (r === null) return false
   try {
-    await api.courses.plan({ weekId: week.id, instructions })
+    await api.courses.plan({ weekId: week.id, instructions: r.instructions, test: r.test })
     useStore.getState().bump()
     return true
   } catch (e) {
@@ -77,6 +77,30 @@ export async function writeTopics(topics: Topic[], opts: { title?: string; level
 }
 
 /**
+ * Write (or write again) a week's end-of-week test: pick the difficulty first.
+ * Returns true when writing started.
+ */
+export async function writeWeekTest(week: Pick<WeekFull, 'id' | 'label' | 'test'>): Promise<boolean> {
+  const again = !!week.test
+  const r = await askWeekTest(again ? `Write ${week.label}’s test again?` : `End-of-week test for ${week.label}`, {
+    message: again
+      ? `You get new questions in place of the ${WEEK_TEST_INFO[week.test!.difficulty].label.toLowerCase()} test you have, and its scores go.`
+      : 'Multiple choice only, across every topic of the week, from the week’s files. Take it from memory once you’ve studied the week.',
+    confirmText: again ? 'Write it again' : 'Write test',
+    initial: week.test?.difficulty
+  })
+  if (!r) return false
+  try {
+    await api.courses.writeWeekTest({ weekId: week.id, difficulty: r.difficulty, instructions: r.instructions })
+    useStore.getState().bump()
+    return true
+  } catch (e) {
+    toast(errorText(e), 'bad')
+    return false
+  }
+}
+
+/**
  * Write a quick review of written topics, saved alongside the notes they
  * already have: those stay as they are (and stay shown), the recall cards are
  * reused, and you can switch between the two. Sharing or publishing the week
@@ -86,7 +110,7 @@ export async function writeQuickReview(topics: Topic[], name: string): Promise<b
   if (!topics.length) return false
   const redo = topics.filter((t) => t.levels.includes('quick')).length
   const r = await askWrite(`Quick review of ${name}`, {
-    message: `Shorter sections that take less time, still covering nearly everything. It’s saved alongside the notes you have: they stay as they are, the recall cards are reused, and you can switch between them on the week page.${redo ? ` ${redo === topics.length ? 'Its quick review is' : `${redo} of them already have a quick review, which is`} written again.` : ''} Publishing or sharing the week includes both.`,
+    message: `Just the main ideas, in a few short sections: a topic takes about a third of the time. Minor details, extra examples and side points are left out. It’s saved alongside the notes you have: they stay as they are, the recall cards are reused, and you can switch between them on the week page.${redo ? ` ${redo === topics.length ? 'Its quick review is' : `${redo} of them already have a quick review, which is`} written again.` : ''} Publishing or sharing the week includes both.`,
     levels: ['quick'],
     multi: false,
     written: topics.length === 1 ? topics[0].levels : [],

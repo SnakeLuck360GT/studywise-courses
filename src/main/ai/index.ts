@@ -11,7 +11,7 @@ import { runClaude, CliError, emitRateLimit, type CliResult, type AiLiveEvent } 
 import { runOllama } from './ollama'
 import { Semaphore } from './queue'
 import { mockResponse, mockStream, mockLive } from './mock'
-import { logAiCall, getDeck, getSetting, courseNoteForDeck } from '../db/repo'
+import { logAiCall, getDeck, getSetting, courseNoteForDeck, courseFocusForDeck } from '../db/repo'
 import { isOffline, OfflineError } from '../offline'
 
 export { CliError }
@@ -113,6 +113,9 @@ The source file${opts.files.length > 1 ? 's' : ''} (${names}) ${opts.files.lengt
       /* ignore */
     }
     // Every call for a course (planning, topics, marking, trimming, explaining its cards) carries its note.
+    // And what kind of course it is (theory, practical/coding, formula/method heavy), so everything is tailored to it.
+    const focus = courseFocusForDeck(opts.deckId)
+    if (focus) prompt += `\n\n${focus}`
     const note = courseNoteForDeck(opts.deckId)
     if (note) prompt += `\n\nMy note about this course (always keep it in mind and tailor everything to it):\n${note}`
   }

@@ -41,6 +41,7 @@ import { MobileTopBar, MobileTabBar, MobileOnboarding, STUDY_ROUTES } from './co
 
 const Learn = lazy(() => import('./pages/Learn').then((m) => ({ default: m.Learn })))
 const TopicPage = lazy(() => import('./pages/Topic').then((m) => ({ default: m.TopicPage })))
+const WeekTestPage = lazy(() => import('./pages/WeekTest').then((m) => ({ default: m.WeekTestPage })))
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
 
 type Theme = 'system' | 'light' | 'dark'
@@ -142,7 +143,16 @@ export function App() {
           }
           if (j.kind === 'course_outline' || j.kind === 'course_topic') {
             if (j.status !== 'done' || first) st.bump()
-            if (first) toast(j.kind === 'course_outline' ? `${j.title.replace(/^Plan: /, '')}: topics planned` : `${j.title.replace(/^Topic: /, '')} is ready`, 'good')
+            // Planning can also write the end-of-week test: say how that went too.
+            const r = j.result as { test?: number; testError?: string } | null
+            const test = r?.test ? `, and a ${r.test}-question end-of-week test` : ''
+            if (first) toast(j.kind === 'course_outline' ? `${j.title.replace(/^Plan: /, '')}: topics planned${test}` : `${j.title.replace(/^Topic: /, '')} is ready`, 'good')
+            if (first && r?.testError) toast(`The end-of-week test didn’t get written: ${r.testError} Try again from the week page.`, 'bad')
+          }
+          if (j.kind === 'course_week_test') {
+            if (j.status !== 'done' || first) st.bump()
+            const n = (j.result as { questions?: number } | null)?.questions
+            if (first) toast(`${j.title.replace(/^Test: /, '')}: end-of-week test ready${n ? ` (${n} questions)` : ''}`, 'good')
           }
           // Downloading marketplace weeks: show each as it goes in, and say when it's finished.
           if (typeof j.meta?.marketAdded === 'number') {
@@ -456,6 +466,8 @@ function Page({ route }: { route: Route }) {
       return <CoursePage id={route.id} />
     case 'week':
       return <WeekPage courseId={route.courseId} weekId={route.weekId} />
+    case 'weektest':
+      return <WeekTestPage key={route.weekId} courseId={route.courseId} weekId={route.weekId} />
     case 'topic':
       return (
         <TopicPage

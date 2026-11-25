@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import { Check } from 'lucide-react'
-import { NOTE_LEVELS, NOTE_LEVEL_INFO, type NoteLevel } from '@shared/course'
-import { Button, Input, Modal, Select, Textarea, cx } from '../components/ui'
+import { NOTE_LEVELS, NOTE_LEVEL_INFO, WEEK_TEST_INFO, WEEK_TEST_LEVELS, isWeekTestLevel, type NoteLevel, type WeekTestLevel } from '@shared/course'
+import { Button, Input, Modal, Select, Textarea, Toggle, cx } from '../components/ui'
 
 interface Ask {
   title: string
@@ -13,9 +13,10 @@ interface Ask {
   /**
    * "confirm" shows only a message; "text" asks for a string; "choose" picks from
    * options; "plan" asks whether to plan, with optional instructions; "write" picks
-   * levels of detail, with optional instructions.
+   * levels of detail, with optional instructions; "weektest" picks a test's
+   * difficulty, with optional instructions.
    */
-  kind: 'text' | 'confirm' | 'choose' | 'plan' | 'write' | 'levels'
+  kind: 'text' | 'confirm' | 'choose' | 'plan' | 'write' | 'levels' | 'weektest'
   message?: string
   /** For "levels": the levels there are to pick from, with a note on each (how many topics have it). */
   only?: NoteLevel[]
@@ -29,6 +30,8 @@ interface Ask {
   /** A third button (for "confirm"), between Cancel and the main one. */
   altText?: string
   placeholder?: string
+  /** For "weektest": the difficulty picked to start with. */
+  testLevel?: WeekTestLevel
   resolve: (v: string | null) => void
 }
 
@@ -48,12 +51,51 @@ export function chooseDialog(title: string, options: { value: string; label: str
   return new Promise((resolve) => useDialog.getState().set({ title, kind: 'choose', options, ...opts, resolve }))
 }
 
+/** The end-of-week test choice the plan dialog last had: off, or a difficulty. */
+const PLAN_TEST_KEY = 'studywise.planTest'
+const lastPlanTest = (): { on: boolean; level: WeekTestLevel } => {
+  try {
+    const v = JSON.parse(localStorage.getItem(PLAN_TEST_KEY) ?? '{}') as { on?: boolean; level?: string }
+    return { on: !!v.on, level: isWeekTestLevel(v.level) ? v.level : 'medium' }
+  } catch {
+    return { on: false, level: 'medium' }
+  }
+}
+
 /**
  * Ask before planning a week. Resolves to the instructions typed (maybe empty)
- * to plan now, or null to leave it for later.
+ * and whether to also write an end-of-week test (null, or its difficulty), to
+ * plan now; or null to leave it for later.
  */
-export function askPlan(title: string, opts: { message?: string; confirmText?: string; cancelText?: string; danger?: boolean; placeholder?: string } = {}): Promise<string | null> {
-  return new Promise((resolve) => useDialog.getState().set({ title, kind: 'plan', confirmText: 'Plan topics', cancelText: 'Not now', ...opts, resolve }))
+export function askPlan(
+  title: string,
+  opts: { message?: string; confirmText?: string; cancelText?: string; danger?: boolean; placeholder?: string } = {}
+): Promise<{ instructions: string; test: WeekTestLevel | null } | null> {
+  return new Promise((resolve) =>
+    useDialog.getState().set({
+      title,
+      kind: 'plan',
+      confirmText: 'Plan topics',
+      cancelText: 'Not now',
+      ...opts,
+      resolve: (v) => resolve(v === null ? null : (JSON.parse(v) as { instructions: string; test: WeekTestLevel | null }))
+    })
+  )
+}
+
+/** Pick the difficulty of an end-of-week test, and optional instructions. Null when cancelled. */
+export function askWeekTest(title: string, opts: { message?: string; confirmText?: string; initial?: WeekTestLevel } = {}): Promise<{ difficulty: WeekTestLevel; instructions: string } | null> {
+  return new Promise((resolve) =>
+    useDialog.getState().set({
+      title,
+      kind: 'weektest',
+      confirmText: 'Write test',
+      ...opts,
+      initial: undefined,
+      testLevel: opts.initial,
+      resolve: (v) => resolve(v === null ? null : (JSON.parse(v) as { difficulty: WeekTestLevel; instructions: string }))
+    })
+  )
 }
 
 const LEVELS_KEY = 'studywise.writeLevels'
@@ -111,6 +153,36 @@ export function askLevels(title: string, available: Partial<Record<NoteLevel, nu
   )
 }
 
+/** Easy, medium or hard, each with what it means. */
+function TestLevelPicker({ value, onChange }: { value: WeekTestLevel; onChange: (v: WeekTestLevel) => void }) {
+  return (
+    <div className="flex flex-col gap-2" role="radiogroup" aria-label="Difficulty">
+      {WEEK_TEST_LEVELS.map((l) => {
+        const on = value === l
+        return (
+          <button
+            key={l}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChange(l)}
+            className={cx(
+              'flex items-start gap-3 rounded-xl border px-4 py-2.5 text-left transition-colors',
+              on ? 'border-accent bg-accent-soft/50' : 'border-line hover:border-[color-mix(in_oklab,var(--ink)_22%,transparent)]'
+            )}
+          >
+            <span className={cx('mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border', on ? 'border-accent bg-accent text-accent-ink' : 'border-line')}>{on && <Check className="size-3.5" />}</span>
+            <span className="min-w-0 flex-1">
+              <span className="font-semibold">{WEEK_TEST_INFO[l].label}</span>
+              <span className="block text-[0.86rem] text-muted">{WEEK_TEST_INFO[l].about}</span>
+            </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function LevelPicker({ value, onChange, multi, written, only, notes }: { value: NoteLevel[]; onChange: (v: NoteLevel[]) => void; multi: boolean; written: NoteLevel[]; only?: NoteLevel[]; notes?: Partial<Record<NoteLevel, string>> }) {
   return (
     <div className="flex flex-col gap-2" role={multi ? 'group' : 'radiogroup'} aria-label="Level of detail">
@@ -150,11 +222,17 @@ export function DialogHost() {
   const set = useDialog((s) => s.set)
   const [value, setValue] = useState('')
   const [levels, setLevels] = useState<NoteLevel[]>([])
+  // Planning: also write an end-of-week test, and how hard. "weektest" uses the difficulty too.
+  const [testOn, setTestOn] = useState(false)
+  const [testLevel, setTestLevel] = useState<WeekTestLevel>('medium')
   const ref = useRef<HTMLInputElement>(null)
   useEffect(() => {
     if (ask) {
       setValue(ask.initial ?? ask.options?.[0]?.value ?? '')
       setLevels(ask.levels ?? ['standard'])
+      const t = lastPlanTest()
+      setTestOn(t.on)
+      setTestLevel(ask.testLevel ?? t.level)
       setTimeout(() => ref.current?.select(), 30)
     }
   }, [ask])
@@ -171,6 +249,14 @@ export function DialogHost() {
       return close(JSON.stringify({ levels, instructions: value.trim() }))
     }
     if (ask.kind === 'levels') return levels.length ? close(JSON.stringify(levels)) : undefined
+    if (ask.kind === 'plan') {
+      localStorage.setItem(PLAN_TEST_KEY, JSON.stringify({ on: testOn, level: testLevel }))
+      return close(JSON.stringify({ instructions: value.trim(), test: testOn ? testLevel : null }))
+    }
+    if (ask.kind === 'weektest') {
+      localStorage.setItem(PLAN_TEST_KEY, JSON.stringify({ ...lastPlanTest(), level: testLevel }))
+      return close(JSON.stringify({ difficulty: testLevel, instructions: value.trim() }))
+    }
     close(ask.kind === 'confirm' ? 'ok' : value.trim())
   }
   const many = ask.kind === 'write' && levels.length > 1
@@ -234,7 +320,13 @@ export function DialogHost() {
             <p className="text-[0.84rem] text-muted">A topic that isn’t written at any depth you pick comes in at the depth it has. You can switch depths, or write another, on the week page later.</p>
           </>
         )}
-        {(ask.kind === 'plan' || ask.kind === 'write') && (
+        {ask.kind === 'weektest' && (
+          <>
+            <div className="text-[0.84rem] font-medium text-ink/80">Difficulty</div>
+            <TestLevelPicker value={testLevel} onChange={setTestLevel} />
+          </>
+        )}
+        {(ask.kind === 'plan' || ask.kind === 'write' || ask.kind === 'weektest') && (
           <label className="flex flex-col gap-1.5">
             <span className="text-[0.84rem] font-medium text-ink/80">Your instructions (optional)</span>
             <Textarea
@@ -248,10 +340,20 @@ export function DialogHost() {
                   ok()
                 }
               }}
-              placeholder={ask.placeholder ?? (ask.kind === 'plan' ? 'e.g. Skip the guest lecture. Give the recursion examples their own topic.' : 'e.g. More code examples. Go really slowly on pointers.')}
+              placeholder={
+                ask.placeholder ??
+                (ask.kind === 'plan' ? 'e.g. Skip the guest lecture. Give the recursion examples their own topic.' : ask.kind === 'weektest' ? 'e.g. More questions on recursion. Lots of code-reading questions.' : 'e.g. More code examples. Go really slowly on pointers.')
+              }
             />
-            <span className="text-[0.8rem] text-muted">These take priority over the usual {ask.kind === 'plan' ? 'planning' : 'writing'} rules.</span>
+            <span className="text-[0.8rem] text-muted">These take priority over the usual {ask.kind === 'plan' ? 'planning' : ask.kind === 'weektest' ? 'test-writing' : 'writing'} rules.</span>
           </label>
+        )}
+        {ask.kind === 'plan' && (
+          <div className="flex flex-col gap-2 rounded-xl border border-line p-3">
+            <Toggle checked={testOn} onChange={setTestOn} label="Also write an end-of-week test" />
+            <p className="text-[0.84rem] text-muted">Multiple choice only, across the whole week, written once the topics are planned (one more AI call). Take it from the week page when you’ve studied the week.</p>
+            {testOn && <TestLevelPicker value={testLevel} onChange={setTestLevel} />}
+          </div>
         )}
         <button type="submit" hidden />
       </form>

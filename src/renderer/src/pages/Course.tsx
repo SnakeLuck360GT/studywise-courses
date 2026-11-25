@@ -5,7 +5,8 @@ import { duplicateWeekGroups } from '@shared/weekMerge'
 import { importSharedWeek } from '../lib/weekShare'
 import { declinedMarketWeek, marketMatches, offerMarketWeek, publishAllToMarket, setCourseVisibility } from '../lib/market'
 import { TrimCardsModal } from '../components/TrimCards'
-import { examPhase, revisionMaxGapDays, sortWeeks, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
+import { examPhase, revisionMaxGapDays, sortWeeks, type CourseFocus, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
+import { CourseFocusPicker, focusText } from '../components/CourseFocus'
 import { useStore, toast } from '../lib/store'
 import { api, errorText } from '../lib/api'
 import { askText, confirmDialog } from '../lib/dialogs'
@@ -130,7 +131,7 @@ export function CoursePage({ id }: { id: string }) {
                     </MenuItem>
                   )}
                   <MenuItem icon={<StickyNote className="size-4" />} onClick={() => (close(), setNoteOpen(true))}>
-                    {c.note ? 'Edit note for the AI…' : 'Add a note for the AI…'}
+                    Tailor the AI to this course (theory, coding, formulas)…
                   </MenuItem>
                   <MenuItem icon={<SlidersHorizontal className="size-4" />} onClick={() => (close(), void openAiSettings())}>
                     Models &amp; instructions
@@ -166,7 +167,7 @@ export function CoursePage({ id }: { id: string }) {
 
       {topics.length > 0 && <ProgressBar value={done / topics.length} className="mb-8" />}
 
-      <CourseNote note={c.note} onEdit={() => setNoteOpen(true)} />
+      <CourseNote note={c.note} focus={c.focus} onEdit={() => setNoteOpen(true)} />
 
       {c.weeks.length > 1 && (
         <div className="mb-2 flex justify-end">
@@ -236,6 +237,7 @@ export function CoursePage({ id }: { id: string }) {
         <CourseNoteModal
           courseId={c.id}
           note={c.note}
+          focus={c.focus}
           onClose={(changed) => {
             setNoteOpen(false)
             if (changed) void load()
@@ -258,9 +260,9 @@ export function CoursePage({ id }: { id: string }) {
   )
 }
 
-/** The course's note to the AI, shown on the course page so you know what every prompt is told. */
-function CourseNote({ note, onEdit }: { note: string; onEdit: () => void }) {
-  if (!note)
+/** The course's note to the AI and what kind of course it is, shown on the course page so you know what every prompt is told. */
+function CourseNote({ note, focus, onEdit }: { note: string; focus: CourseFocus[]; onEdit: () => void }) {
+  if (!note && !focus.length)
     return (
       <button
         onClick={onEdit}
@@ -268,7 +270,7 @@ function CourseNote({ note, onEdit }: { note: string; onEdit: () => void }) {
       >
         <StickyNote className="size-4 shrink-0" />
         <span>
-          <span className="font-semibold text-ink">Add a note for the AI.</span> It goes into every prompt for this course, e.g. “This course is coding heavy and in C, so teach the theory and the coding together.”
+          <span className="font-semibold text-ink">Tailor the AI to this course.</span> Tick whether it’s theory, practical/coding or formula heavy, and add a note. It goes into every prompt for this course.
         </span>
       </button>
     )
@@ -276,8 +278,9 @@ function CourseNote({ note, onEdit }: { note: string; onEdit: () => void }) {
     <div className="mb-6 flex items-start gap-3 rounded-xl border border-line bg-surface px-4 py-3">
       <StickyNote className="mt-0.5 size-4 shrink-0 text-accent" />
       <div className="min-w-0 flex-1">
-        <div className="text-[0.78rem] font-semibold text-muted">Note for the AI · added to every prompt for this course</div>
-        <p className="whitespace-pre-wrap text-[0.95rem]">{note}</p>
+        <div className="text-[0.78rem] font-semibold text-muted">Tailoring for the AI · added to every prompt for this course</div>
+        {focus.length > 0 && <p className="text-[0.95rem] font-semibold">{focusText(focus)}</p>}
+        {note && <p className="whitespace-pre-wrap text-[0.95rem]">{note}</p>}
       </div>
       <Button size="sm" variant="ghost" onClick={onEdit}>
         <Pencil className="size-4" /> Edit
@@ -286,14 +289,16 @@ function CourseNote({ note, onEdit }: { note: string; onEdit: () => void }) {
   )
 }
 
-function CourseNoteModal({ courseId, note, onClose }: { courseId: string; note: string; onClose: (changed: boolean) => void }) {
+function CourseNoteModal({ courseId, note, focus, onClose }: { courseId: string; note: string; focus: CourseFocus[]; onClose: (changed: boolean) => void }) {
   const [value, setValue] = useState(note)
+  const [kinds, setKinds] = useState<CourseFocus[]>(focus)
   const [busy, setBusy] = useState(false)
-  const save = async (v: string) => {
+  const save = async (v: string, f: CourseFocus[] = kinds) => {
     setBusy(true)
     try {
+      await api.courses.setFocus({ courseId, focus: f })
       await api.courses.setNote({ courseId, note: v })
-      toast(v.trim() ? 'Saved. Every prompt for this course now includes your note.' : 'Note removed.', 'good')
+      toast(v.trim() || f.length ? 'Saved. Every prompt for this course is now tailored to it.' : 'Tailoring removed.', 'good')
       onClose(true)
     } catch (e) {
       toast(errorText(e), 'bad')
@@ -305,11 +310,11 @@ function CourseNoteModal({ courseId, note, onClose }: { courseId: string; note: 
     <Modal
       open
       onClose={() => onClose(false)}
-      title="Note for the AI"
+      title="Tailor the AI to this course"
       footer={
         <>
-          {note && (
-            <Button variant="ghost" onClick={() => void save('')}>
+          {(note || focus.length > 0) && (
+            <Button variant="ghost" onClick={() => void save('', [])}>
               Remove
             </Button>
           )}
@@ -323,8 +328,10 @@ function CourseNoteModal({ courseId, note, onClose }: { courseId: string; note: 
       }
     >
       <p className="mb-3 text-[0.92rem] text-muted">
-        This is added automatically to everything the AI does for this course: planning weeks, writing topics, marking your answers, trimming cards and explaining its cards. Use it for what the AI should always know about the course.
+        This is added automatically to everything the AI does for this course: planning weeks, writing topics and tests, marking your answers, trimming cards and explaining its cards.
       </p>
+      <CourseFocusPicker value={kinds} onChange={setKinds} />
+      <div className="mt-4 mb-1.5 text-[0.84rem] font-medium text-ink/80">Note for the AI (optional)</div>
       <Textarea
         rows={4}
         autoFocus

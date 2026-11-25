@@ -293,6 +293,12 @@ export const MIGRATIONS: string[] = [
     PRIMARY KEY (key, item)
   );
   ${syncTriggersSql(SYNC_TABLES.filter((t) => t.since === 14))}
+  `,
+  /* 15: a week can have an end-of-week test (multiple choice, JSON) */ `
+  ALTER TABLE weeks ADD COLUMN test TEXT;
+  `,
+  /* 16: a course says what kind it is (theory, practical/coding, formula/method heavy: a JSON list), and every prompt for it tailors to that */ `
+  ALTER TABLE courses ADD COLUMN focus TEXT NOT NULL DEFAULT '[]';
   `
 ]
 

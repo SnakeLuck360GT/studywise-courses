@@ -23,6 +23,8 @@ export type Route =
    * test: take the topic's test (its check questions) instead of learning it.
    */
   | { name: 'topic'; id: string; section?: number; test?: boolean }
+  /** A week's end-of-week test (multiple choice). */
+  | { name: 'weektest'; courseId: string; weekId: string }
   /** The course marketplace; with courseId, one course's weeks. */
   | { name: 'market'; courseId?: string }
 
@@ -105,7 +107,7 @@ const OFFLINE_HINT = 'Offline mode is on, so AI features are off. Turn it off wi
 let toastSeq = 0
 
 /** Pages that belong to the Courses tab. */
-const COURSE_ROUTES: Route['name'][] = ['courses', 'course', 'week', 'topic']
+const COURSE_ROUTES: Route['name'][] = ['courses', 'course', 'week', 'topic', 'weektest']
 const COURSES_PLACE_KEY = 'sw.coursesPlace'
 
 /** Where you were in Courses, so the tab takes you back there (also after a restart). */

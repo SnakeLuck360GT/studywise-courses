@@ -3,7 +3,7 @@ import type { Card, CardInput, Deck, Folder, Note, ReviewState, ModelChoice, Lea
 import { CardInput as CardInputSchema } from '@shared/types'
 import { parseRequiredPoints, countBlanks } from '@shared/ssText'
 import { isDue, masteryOf } from '@shared/sm2'
-import { examPhase, effectiveDue, examAdjustedDue } from '@shared/course'
+import { courseFocusInstructions, examPhase, effectiveDue, examAdjustedDue } from '@shared/course'
 import { schedule, newState, withDefaults, DEFAULT_SCHEDULER, type SchedulerKind } from '@shared/scheduler'
 import { SYNCED_SETTINGS } from '@shared/syncTables'
 
@@ -429,6 +429,18 @@ function examDateOfDeck(deckId: string): string | null {
 }
 
 /** Your note to the AI for the course a deck belongs to (a week deck, or an old course-wide deck), or ''. */
+/** The tailoring rule for the kinds of course (theory, practical, formula heavy) ticked for a deck's course. */
+export function courseFocusForDeck(deckId: string): string {
+  try {
+    const r = getDb()
+      .prepare('SELECT c.focus FROM courses c WHERE c.deck_id = ? OR c.id IN (SELECT course_id FROM weeks WHERE deck_id = ?) LIMIT 1')
+      .get(deckId, deckId) as { focus: string | null } | undefined
+    return courseFocusInstructions(json<string[]>(r?.focus, []))
+  } catch {
+    return '' // a database from before course focuses
+  }
+}
+
 export function courseNoteForDeck(deckId: string): string {
   try {
     const r = getDb()

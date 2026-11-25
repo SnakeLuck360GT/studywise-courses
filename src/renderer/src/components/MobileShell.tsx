@@ -13,14 +13,14 @@ import { api } from '../lib/api'
 
 const TABS: { label: string; route: Route; match: Route['name'][]; icon: typeof House }[] = [
   { label: 'Home', route: { name: 'home' }, match: ['home'], icon: House },
-  { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic'], icon: GraduationCap },
+  { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic', 'weektest'], icon: GraduationCap },
   { label: 'Decks', route: { name: 'decks' }, match: ['decks', 'deck', 'flashcards', 'learn'], icon: Layers },
   { label: 'Notes', route: { name: 'notes' }, match: ['notes'], icon: NotebookPen },
   { label: 'Settings', route: { name: 'settings' }, match: ['settings', 'jobs'], icon: Settings }
 ]
 
 /** Pages that take the whole screen while you study; they have their own way out. */
-export const STUDY_ROUTES: Route['name'][] = ['topic', 'flashcards', 'learn']
+export const STUDY_ROUTES: Route['name'][] = ['topic', 'weektest', 'flashcards', 'learn']
 
 const TITLES: Partial<Record<Route['name'], string>> = {
   home: 'Studywise',

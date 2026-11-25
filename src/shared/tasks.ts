@@ -22,7 +22,8 @@ export const TASKS = [
   'course_trim',
   'course_update',
   'course_extend',
-  'course_dedupe'
+  'course_dedupe',
+  'course_week_test'
 ] as const
 export type TaskId = (typeof TASKS)[number]
 
@@ -225,7 +226,7 @@ export const TASK_INFO: Record<TaskId, TaskInfo> = {
     label: 'Course: trim recall cards',
     defaultModel: 'sonnet',
     modes: ['json'],
-    variables: ['module', 'level', 'cards'],
+    variables: ['module', 'level', 'cards', 'instructions'],
     streams: false,
     long: false
   },
@@ -253,6 +254,15 @@ export const TASK_INFO: Record<TaskId, TaskInfo> = {
     defaultModel: 'opus',
     modes: ['json'],
     variables: ['module', 'level', 'topic_title', 'existing', 'new_sections', 'source_text', 'part_info', 'instructions'],
+    streams: false,
+    long: true
+  },
+  course_week_test: {
+    id: 'course_week_test',
+    label: 'Course: write an end-of-week test',
+    defaultModel: 'sonnet',
+    modes: ['json'],
+    variables: ['module', 'level', 'week', 'topics', 'files', 'difficulty', 'count', 'source_text', 'instructions'],
     streams: false,
     long: true
   }

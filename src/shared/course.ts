@@ -108,6 +108,25 @@ export const CourseMarkOut = z.object({
 })
 export type CourseMarkOut = z.infer<typeof CourseMarkOut>
 
+/** An end-of-week test: multiple choice only, across the whole week. */
+export const AiWeekTest = z.object({
+  questions: z
+    .array(
+      z.object({
+        type: z.literal('mcq').default('mcq'),
+        q: z.string(),
+        options: z.array(z.string()),
+        answer: z.number().int(),
+        hint: z.string().default(''),
+        why: z.string().default(''),
+        /** The topic it tests, by title. */
+        topic: z.string().default('')
+      })
+    )
+    .min(1)
+})
+export type AiWeekTest = z.infer<typeof AiWeekTest>
+
 /** Which recall cards aren't worth keeping, by their number in the list sent. */
 export const CourseTrimOut = z.object({
   remove: z.array(z.object({ n: z.number().int(), reason: z.string().default('') })).default([])
@@ -179,7 +198,7 @@ export type TopicStatus = 'planned' | 'writing' | 'ready' | 'error'
 
 /**
  * How much detail a topic's notes go into. Standard is the usual write-up;
- * quick revision is shorter but covers nearly as much; in-depth takes longer
+ * quick revision sticks to the main ideas and takes far less time; in-depth takes longer
  * and goes slowly through everything, for topics you struggle with. A topic
  * can be written at several levels and keeps each one.
  */
@@ -188,11 +207,91 @@ export type NoteLevel = (typeof NOTE_LEVELS)[number]
 /** label: on buttons and switches. inline: inside a sentence ("the quick revision notes"). */
 export const NOTE_LEVEL_INFO: Record<NoteLevel, { label: string; short: string; inline: string; about: string }> = {
   standard: { label: 'Standard', short: 'Standard', inline: 'standard', about: 'The usual notes: every examinable point, explained simply.' },
-  quick: { label: 'Quick revision', short: 'Quick', inline: 'quick revision', about: 'Shorter sections that take less time, still covering nearly everything.' },
+  quick: { label: 'Quick revision', short: 'Quick', inline: 'quick revision', about: 'Just the main ideas in a few short sections, so you get through a topic in about a third of the time.' },
   deep: { label: 'In-depth', short: 'In-depth', inline: 'in-depth', about: 'A fuller write-up that goes slowly through everything. For topics you struggle with.' },
   simple: { label: 'Explain it like I’m 12', short: 'Like I’m 12', inline: '“explain it like I’m 12”', about: 'Everyday words and simple examples, one small step at a time, so it really clicks. Easy to review.' }
 }
 export const isNoteLevel = (v: unknown): v is NoteLevel => typeof v === 'string' && (NOTE_LEVELS as readonly string[]).includes(v)
+
+/**
+ * How many questions Claude writes when it writes a topic (Settings → General
+ * → Courses): the usual amount, more, or lots. Each level of detail scales from
+ * its own usual amount.
+ */
+export const QUESTION_AMOUNTS = ['usual', 'more', 'lots'] as const
+export type QuestionAmount = (typeof QUESTION_AMOUNTS)[number]
+export const QUESTION_AMOUNT_INFO: Record<QuestionAmount, { label: string; about: string }> = {
+  usual: { label: 'Usual', about: '2–4 questions after each section, and 5–8 in the topic test.' },
+  more: { label: 'More', about: '4–6 questions after each section, and 8–12 in the topic test.' },
+  lots: { label: 'Lots', about: '6–8 questions after each section, and 12–15 in the topic test.' }
+}
+export const isQuestionAmount = (v: unknown): v is QuestionAmount => typeof v === 'string' && (QUESTION_AMOUNTS as readonly string[]).includes(v)
+
+/** End-of-week tests: multiple choice across the whole week, at a difficulty. */
+export const WEEK_TEST_LEVELS = ['easy', 'medium', 'hard'] as const
+export type WeekTestLevel = (typeof WEEK_TEST_LEVELS)[number]
+export const WEEK_TEST_INFO: Record<WeekTestLevel, { label: string; about: string }> = {
+  easy: { label: 'Easy', about: 'Recognising the key terms and main ideas. A warm-up to check nothing big slipped past you.' },
+  medium: { label: 'Medium', about: 'A mix of recall and applying ideas to short scenarios, with believable wrong answers.' },
+  hard: { label: 'Hard', about: 'Exam-hard: applying, comparing and reasoning in several steps, with near-miss wrong answers.' }
+}
+export const isWeekTestLevel = (v: unknown): v is WeekTestLevel => typeof v === 'string' && (WEEK_TEST_LEVELS as readonly string[]).includes(v)
+
+export type WeekTestQuestion = Extract<CourseQuestion, { type: 'mcq' }> & { topic?: string }
+export interface WeekTestScore {
+  score: number
+  total: number
+  at: string
+}
+export interface WeekTest {
+  difficulty: WeekTestLevel
+  questions: WeekTestQuestion[]
+  written_at: string
+  last: WeekTestScore | null
+  best: WeekTestScore | null
+}
+
+/**
+ * What kind of course it is (ticked when you make it, or later on the course
+ * page). Every AI call for the course is told to tailor its content to them.
+ */
+export const COURSE_FOCUSES = ['theory', 'practical', 'formula'] as const
+export type CourseFocus = (typeof COURSE_FOCUSES)[number]
+export const COURSE_FOCUS_INFO: Record<CourseFocus, { label: string; about: string; prompt: string }> = {
+  theory: {
+    label: 'Theory heavy',
+    about: 'Concepts, arguments and explanations: notes focus on understanding why, linking ideas and exact definitions.',
+    prompt: `THEORY HEAVY: this course is mostly concepts, arguments and explanations. Put the weight on understanding: what each idea means, why it holds or matters, how the ideas connect and differ, and the key definitions in their exact wording. Use concrete examples, "Imagine…" scenarios and A vs B tables to make abstract ideas stick. Questions lean on explaining, comparing and applying concepts to scenarios (more explain and scenario questions), not on calculation or code. Cards focus on definitions, key arguments, contrasts and lists.`
+  },
+  practical: {
+    label: 'Practical / coding heavy',
+    about: 'Doing things: every idea is taught through small worked code or hands-on examples, with questions on reading and fixing code.',
+    prompt: `PRACTICAL / CODING HEAVY: this course is about doing: writing code, using tools and building things. Teach every idea through a small, working example in the course's language (or a concrete hands-on procedure): show it, explain it line by line or step by step (a Code | Simple meaning table for code), and say what it shows. Include the common bugs and mistakes and how to spot them, and how you'd use it in practice. Questions lean on reading, predicting, ordering and fixing code or procedures (what does this output, which line is wrong, put these steps in order, which snippet does X). Cards cover key syntax, APIs, commands and patterns as well as the concepts behind them.`
+  },
+  formula: {
+    label: 'Formula & method heavy',
+    about: 'Formulas, calculations and step-by-step methods: every formula explained symbol by symbol with worked examples.',
+    prompt: `FORMULA AND METHOD HEAVY: this course is about formulas, calculations and step-by-step methods. For every formula: state it, say what each symbol means (with units), when it applies and when it doesn't, then walk through a worked example step by step with numbers. For every method: numbered steps, a worked example, then the usual slips. Write maths in LaTeX ($…$ inline, $$…$$ on its own line). Questions lean on applying formulas and methods to short problems: multiple choice whose wrong options come from common slips (wrong units, a missed step, a rearranging error), putting method steps in order, and filling in values. Cards cover each formula, what its symbols mean and when to use it, and the steps of each method.`
+  }
+}
+export const isCourseFocus = (v: unknown): v is CourseFocus => typeof v === 'string' && (COURSE_FOCUSES as readonly string[]).includes(v)
+
+/** The tailoring rule every prompt for a course gets, from the focuses ticked (empty when none). */
+export function courseFocusInstructions(focus: readonly string[]): string {
+  const picked = COURSE_FOCUSES.filter((f) => focus.includes(f))
+  if (!picked.length) return ''
+  const mix = picked.length > 1 ? ` It's a mix of ${picked.length === 2 ? 'both' : 'all three'}: balance them, using whichever suits each topic best.` : ''
+  return `WHAT KIND OF COURSE THIS IS (tailor the content, examples, questions and cards to it):${mix}\n${picked.map((f) => `- ${COURSE_FOCUS_INFO[f].prompt}`).join('\n')}\nThis only shapes how things are taught and tested: still only use what's in the material.`
+}
+
+/** How far "Cut down flashcards" goes: lose the least important quarter, keep about half, or keep only the essentials. */
+export const CARD_CUTS = ['light', 'medium', 'heavy'] as const
+export type CardCut = (typeof CARD_CUTS)[number]
+export const CARD_CUT_INFO: Record<CardCut, { label: string; about: string; keep: number }> = {
+  light: { label: 'A little', about: 'Removes the least important cards (minor details, near-repeats). Keeps about three quarters.', keep: 0.75 },
+  medium: { label: 'Key content', about: 'Keeps the core definitions, main lists and processes, key contrasts and anything stressed. About half.', keep: 0.5 },
+  heavy: { label: 'Essentials only', about: 'Only what you absolutely must know for the exam: the central ideas of each topic. About a quarter.', keep: 0.25 }
+}
 
 /** A level that's written but not the one being shown, with your progress on it. */
 export interface TopicVersion {
@@ -245,6 +344,8 @@ export interface Week {
   recall_off: boolean
   /** Never published to the marketplace. The week is also kept off it while its course is private. */
   private: boolean
+  /** Its end-of-week test (multiple choice), when one has been written. */
+  test: WeekTest | null
   created_at: string
 }
 
@@ -297,6 +398,8 @@ export interface Course {
   exam_date: string | null
   /** Your note to the AI about this course, added to every prompt for it ("this course is coding heavy…"). */
   note: string
+  /** What kind of course it is (theory, practical/coding, formula/method heavy): every prompt tailors to it. */
+  focus: CourseFocus[]
   /** None of its weeks are published to the marketplace, whatever each week is set to. */
   private: boolean
   created_at: string

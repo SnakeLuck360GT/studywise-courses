@@ -20,8 +20,13 @@ import type { Mark } from '@shared/questions'
 import type { Card, Deck, ModelChoice, ReviewState } from '@shared/types'
 import { activeProvider } from '../ai/models'
 import {
+  CARD_CUT_INFO,
+  COURSE_FOCUSES,
   effectiveDue,
   emptyProgress,
+  isCourseFocus,
+  isQuestionAmount,
+  WEEK_TEST_INFO,
   examPhase,
   isNoteLevel,
   mergeOutlines,
@@ -33,6 +38,9 @@ import {
   shuffleMcqs,
   sortWeeks,
   type AiTopic,
+  type AiWeekTest,
+  type CardCut,
+  type CourseFocus,
   type Course,
   type CourseFile,
   type CourseFull,
@@ -51,8 +59,12 @@ import {
   type TopicSection,
   type TopicProgress,
   type TopicVersion,
+  type QuestionAmount,
   type Week,
-  type WeekFull
+  type WeekFull,
+  type WeekTest,
+  type WeekTestLevel,
+  type WeekTestQuestion
 } from '@shared/course'
 import { cardKey, matchTopics, mergeLevels, mergePlan, remapContent, withQuestionJudge, type MergeTopic, type QuestionJudge } from '@shared/weekMerge'
 import { askAboutRepeats, questionCollector } from './questionDedupe'
@@ -71,8 +83,8 @@ const WHOLE_PDF_PAGES = 40
 // Rows
 
 type CourseRow = Course & { note_folder_id?: string | null }
-type RawCourseRow = Omit<CourseRow, 'private'> & { private: number }
-type WeekRow = Omit<Week, 'recall_off' | 'private'> & { outline: string | null; recall_off: number; private: number; planned_with?: string | null }
+type RawCourseRow = Omit<CourseRow, 'private' | 'focus'> & { private: number; focus?: string | null }
+type WeekRow = Omit<Week, 'recall_off' | 'private' | 'test'> & { outline: string | null; recall_off: number; private: number; planned_with?: string | null; test?: string | null }
 type TopicRow = {
   id: string
   course_id: string
@@ -133,8 +145,8 @@ const toTopic = (r: TopicRow, counts: Map<string, number>): Topic => ({
   updated_at: r.updated_at
 })
 
-const toWeek = ({ outline: _o, recall_off, private: p, planned_with: _p, ...w }: WeekRow): Week => ({ ...w, recall_off: !!recall_off, private: !!p })
-const toCourseRow = (r: RawCourseRow): CourseRow => ({ ...r, private: !!r.private })
+const toWeek = ({ outline: _o, recall_off, private: p, planned_with: _p, test, ...w }: WeekRow): Week => ({ ...w, recall_off: !!recall_off, private: !!p, test: json<WeekTest | null>(test ?? null, null) })
+const toCourseRow = (r: RawCourseRow): CourseRow => ({ ...r, private: !!r.private, focus: json<string[]>(r.focus ?? null, []).filter(isCourseFocus) })
 
 function courseRow(id: string): CourseRow {
   const r = getDb().prepare('SELECT * FROM courses WHERE id = ?').get(id) as RawCourseRow | undefined
@@ -221,7 +233,7 @@ function touchCourse(id: string): void {
   getDb().prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now(), id)
 }
 
-function setWeek(id: string, patch: { status?: string; error?: string | null; outline?: string | null; label?: string; planned_with?: string | null }): void {
+function setWeek(id: string, patch: { status?: string; error?: string | null; outline?: string | null; label?: string; planned_with?: string | null; test?: string | null }): void {
   const sets = Object.keys(patch).map((k) => `${k} = @${k}`)
   if (sets.length) getDb().prepare(`UPDATE weeks SET ${sets.join(', ')} WHERE id = @id`).run({ ...patch, id })
 }
@@ -301,6 +313,13 @@ export function setExamDate(courseId: string, date: string | null): Course {
 }
 
 /** Your note to the AI about the course. It goes into every prompt for the course (see renderPrompt). */
+/** What kind of course it is (theory, practical/coding, formula/method heavy): every prompt for it tailors to these. */
+export function setCourseFocus(courseId: string, focus: CourseFocus[]): Course {
+  const clean = COURSE_FOCUSES.filter((f) => focus.includes(f))
+  getDb().prepare('UPDATE courses SET focus = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(clean), now(), courseId)
+  return courseRow(courseId)
+}
+
 export function setCourseNote(courseId: string, note: string): Course {
   courseRow(courseId)
   getDb().prepare('UPDATE courses SET note = ? WHERE id = ?').run(note.trim(), courseId)
@@ -727,6 +746,11 @@ export async function mergeWeeks(targetId: string, otherIds: string[], opts: { j
       setWeek(targetId, { status: 'ready', error: null, outline: target.outline ?? w.outline ?? null, planned_with: target.planned_with ?? w.planned_with ?? null })
       target.status = 'ready'
     }
+    // A target with no end-of-week test takes the other week's.
+    if (!target.test && w.test) {
+      setWeek(targetId, { test: w.test })
+      target.test = w.test
+    }
     deleteWeek(w.id)
   }
   })
@@ -936,6 +960,96 @@ export async function planWeek(weekId: string, ctx: JobContext, instructions = '
 }
 
 // ---------------------------------------------------------------------------
+// 1b. An end-of-week test (multiple choice only)
+
+/** About three questions per topic, between 10 and 25. */
+export const weekTestCount = (topics: number) => Math.max(10, Math.min(25, topics * 3 || 15))
+
+/**
+ * Write a week's end-of-week test from its files (or, for a week with no files
+ * here, its written notes) at a difficulty. Replaces any test it had.
+ */
+export async function writeWeekTest(weekId: string, ctx: JobContext, difficulty: WeekTestLevel, instructions = ''): Promise<{ questions: number }> {
+  const week = toWeek(weekRow(weekId))
+  const course = courseRow(week.course_id)
+  ctx.meta({ weekId, courseId: course.id })
+  const files = listFiles(course.id).filter((f) => f.week_id === weekId && existsSync(f.path))
+  const topics = listTopics(course.id).filter((t) => t.week_id === weekId)
+  const written = topics.filter((t) => t.content)
+  if (!files.length && !written.length) throw new Error(`Add files to ${week.label}, or write its topics, first.`)
+  const live = ctx.live ?? (() => {})
+  ctx.progress(`Writing the ${WEEK_TEST_INFO[difficulty].label.toLowerCase()} end-of-week test for ${week.label}…`)
+  live({ stage: 'Reading the week…', percent: 0.02 })
+
+  const texts: { file: CourseFile; text: string | null }[] = []
+  for (const f of files) texts.push({ file: f, text: await fileText(f).catch(() => null) })
+  const attach = texts.filter((t) => t.text === null && (t.file.name.toLowerCase().endsWith('.pdf') || isImageFile(t.file.name))).map((t) => t.file.path)
+  // The files share one call's worth of text between them.
+  const withText = texts.filter((t) => t.text !== null)
+  const share = withText.length ? Math.floor(ONE_CALL_CHARS / withText.length) : 0
+  let source = withText.map((t) => fileBlock(t.file.name, t.text!.slice(0, share))).join('\n\n')
+  // Nothing to read (a week added from someone else with no files here): the written notes stand in.
+  if (!source && !attach.length)
+    source = written
+      .map((t) => fileBlock(`${t.content!.title} (notes)`, t.content!.sections.map((s) => `## ${s.heading}\n${s.notes}`).join('\n\n')))
+      .join('\n\n')
+      .slice(0, ONE_CALL_CHARS)
+  const topicList = topics.length
+    ? topics.map((t) => `- ${t.content?.title ?? t.plan.title}${t.plan.goal ? `: ${t.plan.goal}` : ''}${t.plan.stressed?.length ? ` (stressed: ${t.plan.stressed.join('; ')})` : ''}`).join('\n')
+    : '(Not planned yet: work out the topics from the files.)'
+  const count = weekTestCount(topics.length)
+
+  live({ stage: 'Sending it to Claude…', percent: 0.08, log: files.length ? files.map((f) => `Read ${f.name}`) : ['Using the written notes'] })
+  const r = await runAI<AiWeekTest>({
+    task: 'course_week_test',
+    vars: {
+      module: course.module || course.name,
+      level: course.level,
+      week: week.label,
+      topics: topicList,
+      files: files.length ? files.map((f) => f.name).join(', ') : 'none (the notes are included below)',
+      difficulty: `${WEEK_TEST_INFO[difficulty].label}. ${WEEK_TEST_INFO[difficulty].about}`,
+      count: String(count),
+      source_text: source,
+      instructions: priorityInstructions(instructions)
+    },
+    files: attach.length ? attach : undefined,
+    deckId: ensureWeekDeck(weekId),
+    signal: ctx.signal
+  })
+  live({ stage: 'Checking the questions…', percent: 0.97 })
+  const titles = new Map(topics.map((t) => [(t.content?.title ?? t.plan.title).toLowerCase(), t.content?.title ?? t.plan.title]))
+  const questions: WeekTestQuestion[] = []
+  for (const q of r.data.questions) {
+    const [ok] = sanitizeQuestions([{ type: 'mcq', q: q.q, options: q.options, answer: q.answer, hint: q.hint, why: q.why }])
+    if (ok?.type !== 'mcq') continue
+    const topic = titles.get(q.topic.trim().toLowerCase()) ?? q.topic.trim()
+    questions.push(topic ? { ...ok, topic } : ok)
+  }
+  if (!questions.length) throw new Error('Claude didn’t write any usable questions. Try again.')
+  const test: WeekTest = { difficulty, questions, written_at: now(), last: null, best: null }
+  setWeek(weekId, { test: JSON.stringify(test) })
+  touchCourse(course.id)
+  return { questions: questions.length }
+}
+
+/** Save a go at a week's test: the last score, and the best if it beats it. */
+export function saveWeekTestScore(weekId: string, score: number, total: number): Week {
+  const week = toWeek(weekRow(weekId))
+  if (!week.test) throw new Error('This week has no end-of-week test.')
+  const s = { score, total, at: now() }
+  const ratio = (x: { score: number; total: number } | null) => (x && x.total ? x.score / x.total : -1)
+  const test: WeekTest = { ...week.test, last: s, best: ratio(s) >= ratio(week.test.best) ? s : week.test.best }
+  setWeek(weekId, { test: JSON.stringify(test) })
+  return toWeek(weekRow(weekId))
+}
+
+export function deleteWeekTest(weekId: string): Week {
+  setWeek(weekId, { test: null })
+  return toWeek(weekRow(weekId))
+}
+
+// ---------------------------------------------------------------------------
 // 2. Write a topic
 
 interface Attached {
@@ -1098,13 +1212,26 @@ export interface TrimSuggestion {
 /** At most this many cards go in one call; a bigger course is checked a few weeks at a time. */
 const TRIM_BATCH = 600
 
+/** What "Cut down flashcards" asks for on top of the usual trim, at each level. */
+export function cutInstructions(cut: CardCut, total: number): string {
+  const keep = Math.max(1, Math.round(total * CARD_CUT_INFO[cut].keep))
+  const head = `CUT DOWN TO KEY CONTENT. I have too many cards for this week and want fewer, so as well as the cards above, remove cards that are real content but not important enough to keep. Aim to keep about ${keep} of the ${total} cards (that's a target, not exact). This replaces "when a card is genuinely unsure, keep it": here, unsure cards go first.`
+  const how: Record<CardCut, string> = {
+    light: `Cut a little: remove only the least important cards, such as minor details, narrow facts unlikely to be asked, and cards that mostly repeat another one. Keep every key definition, list, process, contrast and formula, and anything the lecturer stressed.`,
+    medium: `Cut to the key content: keep the core definitions, the main lists and processes, the important contrasts and formulas, and anything the lecturer stressed. Remove secondary details, smaller facts, and cards that only add a little to another card.`,
+    heavy: `Cut to the essentials only: keep just what I absolutely must know for the exam, the central definitions and the most important ideas of each topic. Remove everything else, even if it's examinable. Keep at least one card for each topic that has cards.`
+  }
+  return `${head}\n${how[cut]}\nFor these, "reason" says why it's less important in a few words (e.g. "minor detail", "covered by 12").`
+}
+
 /**
  * Asks which recall cards aren't pure course content: one week's (or just one
  * topic's), or a whole course's at once so duplicates across weeks are caught.
- * Only the cards' text is sent, so it's cheap. Nothing is removed here: the
- * student picks from the suggestions.
+ * With `cut`, it also cuts the cards down to the key content, by how much you
+ * picked. Only the cards' text is sent, so it's cheap. Nothing is removed
+ * here: the student picks from the suggestions.
  */
-export async function suggestTrim(scope: { weekId: string; topicId?: string } | { courseId: string }): Promise<{ total: number; remove: TrimSuggestion[] }> {
+export async function suggestTrim(scope: ({ weekId: string; topicId?: string } | { courseId: string }) & { cut?: CardCut }): Promise<{ total: number; remove: TrimSuggestion[] }> {
   const courseId = 'courseId' in scope ? scope.courseId : weekRow(scope.weekId).course_id
   const c = courseRow(courseId)
   const weeks = (getDb().prepare('SELECT * FROM weeks WHERE course_id = ? ORDER BY position').all(courseId) as WeekRow[]).filter((w) => !('weekId' in scope) || w.id === scope.weekId)
@@ -1126,7 +1253,8 @@ export async function suggestTrim(scope: { weekId: string; topicId?: string } | 
     const list = batch
       .map((x, i) => `${i + 1}. [${whole ? `${x.week} · ` : ''}${x.topicId ? titles.get(x.topicId) ?? 'Topic' : 'Added by hand'}] Q: ${oneLine(x.card.front)} | A: ${oneLine(x.card.back)}`)
       .join('\n')
-    const r = await runAI<CourseTrimOut>({ task: 'course_trim', vars: { module: c.module || c.name, level: c.level, cards: list }, deckId: courseDeckId(courseId) })
+    const instructions = scope.cut ? cutInstructions(scope.cut, batch.length) : ''
+    const r = await runAI<CourseTrimOut>({ task: 'course_trim', vars: { module: c.module || c.name, level: c.level, cards: list, instructions }, deckId: courseDeckId(courseId) })
     const seen = new Set<number>()
     for (const x of r.data.remove) {
       if (x.n < 1 || x.n > batch.length || seen.has(x.n)) continue
@@ -1175,21 +1303,52 @@ export function sectionCards(cards: AiTopic['cards'], section: number): { front:
   return cards.filter((c) => c.section === section && c.front.trim() && c.back.trim()).map((c) => ({ front: withPointCount(c.front.trim(), c.back.trim()), back: c.back.trim() }))
 }
 
-/** What each level of detail asks for on top of the usual rules. Standard is the usual write-up, so it adds nothing. */
-export function levelInstructions(level: NoteLevel): string {
+/** Questions per section and in the topic test, for each level of detail at each amount (Settings → Courses). */
+const QUESTION_COUNTS: Record<NoteLevel, Record<QuestionAmount, { section: string; check: string }>> = {
+  standard: { usual: { section: '2–4', check: '5–8' }, more: { section: '4–6', check: '8–12' }, lots: { section: '6–8', check: '12–15' } },
+  quick: { usual: { section: '1–2', check: '3–5' }, more: { section: '2–3', check: '5–8' }, lots: { section: '3–4', check: '8–10' } },
+  deep: { usual: { section: '3–4', check: '5–8' }, more: { section: '5–6', check: '8–12' }, lots: { section: '7–8', check: '12–15' } },
+  simple: { usual: { section: '2–3', check: '5–8' }, more: { section: '4–5', check: '8–12' }, lots: { section: '6–7', check: '12–15' } }
+}
+
+/** How many questions to write per topic, from Settings → Courses. */
+export function questionAmount(): QuestionAmount {
+  const v = repo.getSetting<string>('course.questions', 'usual')
+  return isQuestionAmount(v) ? v : 'usual'
+}
+
+/** The question counts for a level, as a rule for the prompt. Standard at the usual amount is the usual rules, so it adds nothing. */
+function questionRule(level: NoteLevel, amount: QuestionAmount, check: boolean): string {
+  const n = QUESTION_COUNTS[level][amount]
+  if (amount === 'usual') return level === 'standard' ? '' : `- ${n.section} questions per section.${check ? ` "check" (the topic test): ${n.check} questions.` : ''}`
+  return `- More practice: ${n.section} questions per section${check ? `, and ${n.check} questions in "check" (the topic test)` : ''}, instead of the usual amount. Every question still only tests what's been taught so far. Use the extra questions to come at the ideas from different angles (scenarios, applying it, contrasts, spotting mistakes), never to ask the same thing twice.`
+}
+
+/**
+ * What each level of detail asks for on top of the usual rules, with the
+ * number of questions from Settings → Courses. Standard at the usual amount is
+ * the usual write-up, so it adds nothing. `check`: false when adding sections
+ * to a written topic, which asks for its own few extra test questions.
+ */
+export function levelInstructions(level: NoteLevel, amount: QuestionAmount = 'usual', check = true): string {
+  const questions = questionRule(level, amount, check)
   if (level === 'quick')
-    return `LEVEL OF DETAIL: QUICK REVISION. I want a shorter version of this topic that I can get through quickly, without losing much content.
-- Shorter sections: about 40–110 words of notes each. Merge sections from the outline where two short ones fit naturally together.
-- Mostly tight bullets, short definitions, compact tables and numbered steps. Cut the scene-setting, long "Imagine…" stories and long worked examples; keep at most one very short example where it's really needed to get the idea.
-- Still cover every examinable point, definition, list, contrast and formula from the sources: compress, don't drop. Anything stressed still gets a "Remember:".
-- 1–3 questions per section. The topic check and the recall cards follow the usual rules.`
+    return `LEVEL OF DETAIL: QUICK REVISION. I'm revising and short on time. I want the fastest way through this topic: just the main ideas, the things most likely to come up in the exam, in a fraction of the time the full notes take (aim for about a third: roughly 5 minutes for a typical topic).
+- Focus on the core only: the key definitions, the main ideas and how they fit together, the key lists and steps, the important contrasts and formulas, and anything the lecturer stressed. Leave out minor details, side points, background, history, extra examples and edge cases. If something wouldn't be worth a mark in the exam, cut it.
+- Few, short sections: about 2–4 for the whole topic (never more than 5), merging the outline's sections freely. Each section about 30–80 words of notes. Ignore the usual one-screen-per-idea rule.
+- Tight bullets, short definitions and compact tables only. No "Imagine…" stories, analogies, scene-setting or worked examples, unless one line is essential to get the idea. No figures or diagrams unless one shows the main idea at a glance.
+- The last section still ends with "**Quick exam summary:**" and 3–5 bullets.
+- Questions are quick to answer: mostly mcq, true_false, match and fill_blank. No explain questions in the sections.
+${questions}
+- The recall cards follow the usual rules.`
   if (level === 'deep')
     return `LEVEL OF DETAIL: IN-DEPTH. I struggle with this topic, so I want a fuller write-up that makes sure I really understand it, even though it takes longer.
 - Go slowly and build everything up from the basics. Sections can run to about two screens (up to roughly 350 words), and you can split the outline's sections into more sections where that helps.
 - For each idea: what it means in everyday words, the proper term or definition, why it works or happens (not just what), and how it connects to the ideas around it.
 - More worked examples, each walked through step by step with every step explained. More "Common mistake:" callouts, and "Check yourself:" lines that ask me something to think about before moving on.
 - Where the material is technical, show the reasoning or derivation rather than just the result.
-- 3–4 questions per section. The topic check and the recall cards follow the usual rules.
+${questions}
+- The recall cards follow the usual rules.
 - Still only teach what's in the material.`
   if (level === 'simple')
     return `LEVEL OF DETAIL: EXPLAIN IT LIKE I'M 12. Explain this topic so a bright 12-year-old would really understand it, while still covering what I need for the exam. Simple, easy to review, and it has to click.
@@ -1199,8 +1358,10 @@ export function levelInstructions(level: NoteLevel): string {
 - Where something has steps, number them, one short line each. Where two things get mixed up, a tiny "A vs B" table with plain words.
 - After the tricky ideas, add a "**Quick check:**" line asking me something simple to think about, with the answer straight after in brackets.
 - Still cover every examinable point, definition and formula from the sources: say it simply, don't drop it. Keep the exact wording of any formal definition the exam might test, after the simple version, with "Remember:" before it.
-- 2–3 questions per section, written in the same simple language. The topic check and the recall cards follow the usual rules, but keep their wording plain too.`
-  return ''
+${questions}
+- Questions, the topic check and the recall cards are written in the same simple language; the cards otherwise follow the usual rules.`
+  return questions ? `NUMBER OF QUESTIONS:
+${questions}` : ''
 }
 
 const sameFront = (a: string, b: string) => a.replace(/\s+/g, ' ').trim().toLowerCase() === b.replace(/\s+/g, ' ').trim().toLowerCase()
@@ -1265,7 +1426,7 @@ async function writeTopicLevel(topicId: string, ctx: JobContext, instructions: s
         topic_title: topic.plan.title,
         source_text: src.text,
         part_info: src.notes.join('\n'),
-        instructions: [levelInstructions(level), reuse, priorityInstructions(instructions)].filter(Boolean).join('\n\n')
+        instructions: [levelInstructions(level, questionAmount()), reuse, priorityInstructions(instructions)].filter(Boolean).join('\n\n')
       },
       files: src.attach.length ? src.attach : undefined,
       deckId: ensureWeekDeck(topic.week_id),
@@ -1530,7 +1691,7 @@ async function extendTopic(topicId: string, u: CourseUpdate['updates'][number], 
           new_sections: u.sections.map((h) => `- ${h}`).join('\n'),
           source_text: src.text,
           part_info: [src.notes.join('\n'), u.stressed.length ? `Stressed in the new material: ${u.stressed.join('; ')}` : ''].filter(Boolean).join('\n'),
-          instructions: [levelInstructions(level), reuse, priorityInstructions(instructions)].filter(Boolean).join('\n\n')
+          instructions: [levelInstructions(level, questionAmount(), false), reuse, priorityInstructions(instructions)].filter(Boolean).join('\n\n')
         },
         files: src.attach.length ? src.attach : undefined,
         deckId,

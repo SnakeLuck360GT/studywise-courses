@@ -35,8 +35,8 @@ import {
   FilePlus2,
   Merge
 } from 'lucide-react'
-import { NOTE_LEVEL_INFO, NOTE_LEVELS, unreviewedSections, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
-import { mergeWeekWith, offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics } from '../lib/courseFlows'
+import { NOTE_LEVEL_INFO, NOTE_LEVELS, WEEK_TEST_INFO, unreviewedSections, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
+import { mergeWeekWith, offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics, writeWeekTest } from '../lib/courseFlows'
 import { planUsageText, type JobInfo } from '@shared/types'
 import { shareWeek } from '../lib/weekShare'
 import { chooseMarketWeek, declinedMarketWeek, findMarketWeek, marketMatches, modelsText, publishToMarket, setWeekVisibility } from '../lib/market'
@@ -112,8 +112,11 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
   // Every level any written topic has: more than one, and the week can switch them all at once.
   const weekLevels = NOTE_LEVELS.filter((l) => written.some((t) => t.levels.includes(l)))
   const shownLevels = [...new Set(written.map((t) => t.level))]
-  // Trimming recall cards: the whole week, or one topic.
-  const [trim, setTrim] = useState<{ topicId?: string; title: string } | null>(null)
+  // Trimming recall cards: the whole week, or one topic. cut: Cut down flashcards (pick how far first).
+  const [trim, setTrim] = useState<{ topicId?: string; title: string; cut?: boolean } | null>(null)
+  // The end-of-week test being written (on its own, or straight after planning).
+  const testJob = runningJob(jobs, 'course_week_test', 'weekId', w.id)
+  const canWriteTest = !IS_MOBILE && !planning && !testJob && (w.files.length > 0 || written.length > 0)
   // A blank week someone has already published: offered on the page.
   const blank = !w.topics.length && !planning
   const [made, setMade] = useState<MarketMatch[]>([])
@@ -221,7 +224,7 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
             {!planning && noQuick.length > 0 && (
               <Button
                 onClick={() => quickReview(noQuick, noQuick.length === 1 ? (noQuick[0].content?.title ?? noQuick[0].plan.title) : `${noQuick.length} topics`)}
-                title="Shorter notes for revising, saved alongside the ones you have. Publishing the week includes both."
+                title="Just the main ideas, in about a third of the time. Saved alongside the notes you have; publishing the week includes both."
               >
                 <Zap className="size-4" /> Quick review{noQuick.length < written.length ? ` of ${noQuick.length} more` : ''}
               </Button>
@@ -251,6 +254,16 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
                   {w.card_count > 0 && (
                     <MenuItem icon={<Scissors className="size-4" />} onClick={() => (close(), setTrim({ title: w.label }))}>
                       Trim recall cards…
+                    </MenuItem>
+                  )}
+                  {w.card_count > 0 && (
+                    <MenuItem icon={<Scissors className="size-4" />} onClick={() => (close(), setTrim({ title: w.label, cut: true }))}>
+                      Cut down flashcards to key content…
+                    </MenuItem>
+                  )}
+                  {canWriteTest && (
+                    <MenuItem desktopOnly icon={<ClipboardCheck className="size-4" />} onClick={() => (close(), void writeWeekTest(w).then((ok) => ok && reload()))}>
+                      {w.test ? 'Write the end-of-week test again…' : 'Write an end-of-week test…'}
                     </MenuItem>
                   )}
                   <MenuItem icon={w.recall_off ? <BellRing className="size-4" /> : <BellOff className="size-4" />} onClick={() => (close(), void toggleRecall())}>
@@ -403,6 +416,53 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
           )}
         </section>
 
+        {(w.test || testJob || (canWriteTest && w.topics.length > 0)) && (
+          <section>
+            <h2 className="mb-3 text-[1.1rem] font-semibold tracking-tight">End-of-week test</h2>
+            {testJob ? (
+              <div className="rounded-xl border border-accent/30 bg-accent-soft/40 p-5">
+                <div className="flex items-center gap-2 font-semibold">
+                  <ClipboardCheck className="size-4 text-accent" /> Writing the end-of-week test <Dots />
+                </div>
+                <p className="mt-1 text-[0.9rem] text-muted">Multiple choice across the whole week. You can leave this page; it keeps going.</p>
+                <div className="mt-4">
+                  <JobLive job={testJob} />
+                </div>
+              </div>
+            ) : w.test ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface px-5 py-4">
+                <ClipboardCheck className="size-5 text-muted" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold">
+                    {w.test.questions.length} multiple-choice questions · {WEEK_TEST_INFO[w.test.difficulty].label}
+                  </div>
+                  <div className="text-[0.88rem] text-muted">
+                    {w.test.best
+                      ? `Best ${w.test.best.score}/${w.test.best.total} (${Math.round((w.test.best.score / Math.max(1, w.test.best.total)) * 100)}%)${w.test.last && w.test.last.at !== w.test.best.at ? ` · last time ${w.test.last.score}/${w.test.last.total}` : ''}`
+                      : 'Across every topic of the week. Take it from memory once you’ve studied them.'}
+                  </div>
+                </div>
+                <Button size="sm" variant={w.test.best ? 'soft' : 'primary'} onClick={() => go({ name: 'weektest', courseId: c.id, weekId: w.id })}>
+                  {w.test.best ? 'Take it again' : 'Take the test'}
+                </Button>
+                {canWriteTest && (
+                  <Button size="sm" variant="ghost" onClick={() => void writeWeekTest(w).then((ok) => ok && reload())} title="New questions, at the same or another difficulty">
+                    <RefreshCw className="size-4" /> Write again
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed border-line px-5 py-4">
+                <ClipboardCheck className="size-5 text-muted" />
+                <div className="min-w-0 flex-1 text-[0.9rem] text-muted">Test yourself on the whole week: multiple choice only, easy, medium or hard. Optional, one AI call.</div>
+                <Button size="sm" variant="soft" onClick={() => void writeWeekTest(w).then((ok) => ok && reload())}>
+                  Write a test…
+                </Button>
+              </div>
+            )}
+          </section>
+        )}
+
         <section>
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 className="text-[1.1rem] font-semibold tracking-tight">Files</h2>
@@ -447,6 +507,11 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
                 Review due
               </Button>
             )}
+            {w.card_count > 1 && (
+              <Button size="sm" variant="ghost" onClick={() => setTrim({ title: w.label, cut: true })} title="Keep only the key content: pick how far to cut, then check the list before anything goes">
+                <Scissors className="size-4" /> Cut down…
+              </Button>
+            )}
             {w.deck_id && (
               <Button size="sm" variant="ghost" onClick={() => go({ name: 'deck', id: w.deck_id! })}>
                 Open deck
@@ -478,6 +543,8 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
           weekId={w.id}
           topicId={trim.topicId}
           title={trim.title}
+          cut={trim.cut}
+          cards={w.card_count}
           onClose={() => {
             setTrim(null)
             reload()
@@ -666,7 +733,7 @@ function TopicRow({ t, write, saveNote, reload, onTrim }: { t: Topic; write: (to
               <Pill tone="accent">{NOTE_LEVEL_INFO[t.level].label}</Pill>
             )}
             {!t.levels.includes('quick') && (
-              <Button size="sm" variant="ghost" onClick={() => void writeQuickReview([t], t.content?.title ?? t.plan.title).then((ok) => ok && reload())} title="Shorter notes for revising, saved alongside these. Publishing the week includes both.">
+              <Button size="sm" variant="ghost" onClick={() => void writeQuickReview([t], t.content?.title ?? t.plan.title).then((ok) => ok && reload())} title="Just the main ideas, in about a third of the time. Saved alongside these; publishing the week includes both.">
                 <Zap className="size-3.5" /> Add a quick review
               </Button>
             )}
