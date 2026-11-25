@@ -5,16 +5,62 @@ import { parseRequiredPoints, countBlanks } from '@shared/ssText'
 import { isDue, masteryOf } from '@shared/sm2'
 import { examPhase, effectiveDue, examAdjustedDue } from '@shared/course'
 import { schedule, newState, withDefaults, DEFAULT_SCHEDULER, type SchedulerKind } from '@shared/scheduler'
+import { SYNCED_SETTINGS } from '@shared/syncTables'
 
 // ---------- settings ----------
 export function getSetting<T>(key: string, fallback: T): T {
+  if (key in SYNCED_SETTINGS) return getSyncedSetting(key, fallback)
   const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
   return row ? json<T>(row.value, fallback) : fallback
 }
 export function setSetting(key: string, value: unknown): void {
+  if (key in SYNCED_SETTINGS) return setSyncedSetting(key, value)
   getDb()
     .prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, JSON.stringify(value))
+}
+
+// Settings that sync (SYNCED_SETTINGS) live in synced_settings, a row per map
+// entry or list item, so devices adding different entries never overwrite
+// each other. Values saved before that move over the first time they're used.
+
+/** Moves every synced setting saved the old way, so they all sync from the start (run at startup). */
+export function moveSyncedSettings(): void {
+  for (const key of Object.keys(SYNCED_SETTINGS)) movedSetting(key)
+}
+
+function movedSetting(key: string): void {
+  const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+  if (!row) return
+  getDb().prepare('DELETE FROM settings WHERE key = ?').run(key)
+  const v = json<unknown>(row.value, null)
+  if (v != null) setSyncedSetting(key, v)
+}
+
+function getSyncedSetting<T>(key: string, fallback: T): T {
+  movedSetting(key)
+  const rows = getDb().prepare('SELECT item, value FROM synced_settings WHERE key = ? ORDER BY rowid').all(key) as { item: string; value: string }[]
+  if (!rows.length) return fallback
+  return (SYNCED_SETTINGS[key] === 'list' ? rows.map((r) => r.item) : Object.fromEntries(rows.map((r) => [r.item, json<unknown>(r.value, null)]))) as T
+}
+
+/** Writes only the entries that changed, so each syncs on its own. */
+function setSyncedSetting(key: string, value: unknown): void {
+  movedSetting(key)
+  const next = new Map<string, string>()
+  if (SYNCED_SETTINGS[key] === 'list') {
+    if (Array.isArray(value)) for (const v of value) next.set(String(v), 'true')
+  } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const [k, v] of Object.entries(value)) if (v !== undefined) next.set(k, JSON.stringify(v))
+  }
+  const d = getDb()
+  const cur = new Map((d.prepare('SELECT item, value FROM synced_settings WHERE key = ?').all(key) as { item: string; value: string }[]).map((r) => [r.item, r.value]))
+  const del = d.prepare('DELETE FROM synced_settings WHERE key = ? AND item = ?')
+  const put = d.prepare('INSERT INTO synced_settings (key, item, value) VALUES (?, ?, ?) ON CONFLICT (key, item) DO UPDATE SET value = excluded.value')
+  d.transaction(() => {
+    for (const item of cur.keys()) if (!next.has(item)) del.run(key, item)
+    for (const [item, v] of next) if (cur.get(item) !== v) put.run(key, item, v)
+  })()
 }
 export function allSettings(): Record<string, unknown> {
   const rows = getDb().prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[]

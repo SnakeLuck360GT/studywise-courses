@@ -31,8 +31,25 @@ export const SYNC_TABLES: SyncTable[] = [
   { name: 'course_files', pk: ['id'] },
   { name: 'topics', pk: ['id'] },
   // One row per day per device, so two devices never write the same row.
-  { name: 'study_time', pk: ['day', 'device'], since: 9 }
+  { name: 'study_time', pk: ['day', 'device'], since: 9 },
+  // The few settings that sync (SYNCED_SETTINGS), one row per entry so two devices adding different ones don't clash.
+  { name: 'synced_settings', pk: ['key', 'item'], since: 14 }
 ]
+
+/**
+ * Settings kept in synced_settings instead of settings, so every synced device
+ * has them. repo.getSetting/setSetting handle them like any other setting: a
+ * map is a row per entry, a list a row per item. These are the marketplace's
+ * record of which weeks you added and published, and which of your courses
+ * each marketplace course goes into; they name weeks and courses, which sync.
+ */
+export const SYNCED_SETTINGS: Record<string, 'map' | 'list'> = {
+  'market.added': 'map',
+  'market.published': 'map',
+  'market.publishedHash': 'map',
+  'market.courseLinks': 'map',
+  'market.importedWeeks': 'list'
+}
 
 export const KEY_SEP = '\x1f'
 

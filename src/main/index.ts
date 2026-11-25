@@ -230,6 +230,11 @@ app.whenReady().then(async () => {
   seedPresets()
   recoverInterrupted()
   try {
+    repo.moveSyncedSettings()
+  } catch (e) {
+    console.error('[sync] moving synced settings failed:', e)
+  }
+  try {
     organizeCourseDecks()
   } catch (e) {
     console.error('[courses] organising decks failed:', e)

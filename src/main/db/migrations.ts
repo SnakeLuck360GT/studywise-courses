@@ -1,6 +1,9 @@
 import type Database from 'better-sqlite3'
 import { SYNC_SCHEMA_SQL, SYNC_TABLES, syncTriggersSql } from '@shared/syncTables'
 
+/** The synced tables that existed when migration 11 rebuilt the triggers (later tables get theirs in their own migration). */
+const UP_TO_11 = SYNC_TABLES.filter((t) => !t.since || t.since <= 11)
+
 // Each entry runs once, in order. user_version tracks how many have run.
 export const MIGRATIONS: string[] = [
   /* 1: initial schema */ `
@@ -272,8 +275,8 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE topics ADD COLUMN written_with TEXT NOT NULL DEFAULT '{}';
   `,
   /* 11: a change is always logged as later than the version it replaced (a phone a little behind the computer's clock lost edits) */ `
-  ${SYNC_TABLES.flatMap((t) => ['ins', 'upd', 'del'].map((k) => `DROP TRIGGER IF EXISTS sync_${t.name}_${k};`)).join('\n  ')}
-  ${syncTriggersSql(SYNC_TABLES)}
+  ${UP_TO_11.flatMap((t) => ['ins', 'upd', 'del'].map((k) => `DROP TRIGGER IF EXISTS sync_${t.name}_${k};`)).join('\n  ')}
+  ${syncTriggersSql(UP_TO_11)}
   `,
   /* 12: courses and weeks can be private: never published to the marketplace (a week is private if it or its course is) */ `
   ALTER TABLE courses ADD COLUMN private INTEGER NOT NULL DEFAULT 0;
@@ -281,6 +284,15 @@ export const MIGRATIONS: string[] = [
   `,
   /* 13: notes have a place in their folder, so they can be listed in revision order (null: made before this, listed after) */ `
   ALTER TABLE notes ADD COLUMN position REAL;
+  `,
+  /* 14: settings that sync, one row per entry (the marketplace's record of which weeks you added and published; see SYNCED_SETTINGS) */ `
+  CREATE TABLE synced_settings (
+    key TEXT NOT NULL,
+    item TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (key, item)
+  );
+  ${syncTriggersSql(SYNC_TABLES.filter((t) => t.since === 14))}
   `
 ]
 
