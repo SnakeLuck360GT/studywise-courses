@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { keyLabel } from '@shared/keymap'
 import { Check, X as XIcon, GripVertical } from 'lucide-react'
 import type { LearnQuestion, LearnAnswer, Mark, PayloadOf } from '@shared/questions'
@@ -217,14 +217,54 @@ export function FreeAnswer({ q, mark, answer, onAnswer, disabled }: QProps<'free
   )
 }
 
-const PAIR_COLORS = ['#6d4aff', '#14895e', '#d97706', '#db2777', '#0284c7', '#7c3aed']
+interface Pt {
+  x: number
+  y: number
+}
 
+/** A curve from one side to the other, leaving and arriving level. */
+const curve = (a: Pt, b: Pt): string => {
+  const dx = Math.max(16, (b.x - a.x) / 2)
+  return `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`
+}
+
+/**
+ * Match up: tap a term, then its meaning, and a line joins them (tap a joined
+ * meaning to undo it). Once marked, right lines go green and wrong ones red and
+ * dashed, with the right answer under each wrong term.
+ */
 export function MatchPairs({ q, mark, answer, onAnswer, disabled }: QProps<'match_pairs'>) {
   const rights = useMemo(() => shuffled(q.payload.pairs.map((p, i) => ({ text: p.right, i })), q.id), [q])
   const [mapping, setMapping] = useState<Record<number, number>>(answer?.type === 'match_pairs' ? answer.mapping : {})
   const [left, setLeft] = useState<number | null>(null)
-  const colorOf = (l: number) => PAIR_COLORS[Object.keys(mapping).map(Number).sort((a, b) => a - b).indexOf(l) % PAIR_COLORS.length]
   const wrong = new Set(mark?.detail?.wrongItems ?? [])
+  const box = useRef<HTMLDivElement>(null)
+  const leftEls = useRef<(HTMLButtonElement | null)[]>([])
+  const rightEls = useRef<Record<number, HTMLButtonElement | null>>({})
+  // Where each term's and meaning's connector sits, inside the box.
+  const [pts, setPts] = useState<{ l: (Pt | null)[]; r: Record<number, Pt> }>({ l: [], r: {} })
+  useLayoutEffect(() => {
+    const el = box.current
+    if (!el) return
+    const measure = () => {
+      const b = el.getBoundingClientRect()
+      const at = (r: DOMRect | undefined, side: 'left' | 'right'): Pt | null => (r ? { x: r[side] - b.left, y: r.top + r.height / 2 - b.top } : null)
+      const l = q.payload.pairs.map((_, i) => at(leftEls.current[i]?.getBoundingClientRect(), 'right'))
+      const r: Record<number, Pt> = {}
+      for (const { i } of rights) {
+        const p = at(rightEls.current[i]?.getBoundingClientRect(), 'left')
+        if (p) r[i] = p
+      }
+      setPts({ l, r })
+    }
+    measure()
+    // Text wraps differently as the window changes, and marking adds the right answers under wrong terms.
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    for (const b of [...leftEls.current, ...Object.values(rightEls.current)]) if (b) ro.observe(b)
+    return () => ro.disconnect()
+  }, [q, rights, mark])
+
   const pickRight = (r: number) => {
     if (left === null) {
       // Clicking a matched right unpairs it.
@@ -243,50 +283,80 @@ export function MatchPairs({ q, mark, answer, onAnswer, disabled }: QProps<'matc
   }
   const complete = Object.keys(mapping).length === q.payload.pairs.length
   useSubmitSignal(() => complete && onAnswer({ type: 'match_pairs', mapping }), !disabled)
+  const joined = new Set(Object.values(mapping))
+  const lineColour = (l: number) => (!mark ? 'var(--accent)' : wrong.has(l) ? 'var(--bad)' : 'var(--good)')
   return (
-    <div className="flex flex-col gap-4">
-      <div className="text-[0.8rem] font-semibold text-muted">Match each one with its partner</div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-2">
-          {q.payload.pairs.map((p, i) => {
-            const paired = mapping[i] !== undefined
+    <div className="flex flex-col gap-5">
+      <div className="text-[0.8rem] font-semibold text-muted">Tap a term, then its meaning, to join them</div>
+      <div ref={box} className="relative flex items-start gap-12 sm:gap-28">
+        <svg className="pointer-events-none absolute inset-0 size-full overflow-visible" aria-hidden>
+          {Object.entries(mapping).map(([l, r]) => {
+            const a = pts.l[Number(l)]
+            const b = pts.r[r]
+            if (!a || !b) return null
+            const bad = mark && wrong.has(Number(l))
             return (
-              <button
-                key={i}
-                disabled={disabled}
-                onClick={() => setLeft(left === i ? null : i)}
-                style={paired && !mark ? { borderColor: colorOf(i), background: `color-mix(in oklab, ${colorOf(i)} 12%, var(--surface))` } : undefined}
-                className={cx(
-                  'min-h-14 rounded-xl border-2 px-4 py-3 text-left text-[0.95rem] font-semibold transition-[transform,border-color,background] duration-300 ease-out-soft',
-                  left === i ? 'scale-[1.02] border-accent bg-accent-soft' : 'border-line bg-surface',
-                  !disabled && 'hover:border-accent',
-                  mark && (wrong.has(i) ? 'shake border-bad bg-bad-soft' : 'border-good bg-good-soft')
-                )}
-              >
-                <Markdown>{p.left}</Markdown>
-                {mark && wrong.has(i) && <div className="mt-1 text-[0.82rem] font-medium text-good">→ {p.right}</div>}
-              </button>
+              <path
+                key={`${l}-${r}-${mark ? 'm' : ''}`}
+                d={curve(a, b)}
+                pathLength={mark ? undefined : 1}
+                className={mark ? undefined : 'line-draw'}
+                fill="none"
+                stroke={lineColour(Number(l))}
+                strokeWidth={2.5}
+                strokeLinecap="round"
+                strokeDasharray={bad ? '6 6' : undefined}
+              />
             )
           })}
+          {/* A dot on each side: hollow until it's joined. */}
+          {pts.l.map((p, i) =>
+            p ? <circle key={`l${i}`} cx={p.x} cy={p.y} r={5} strokeWidth={2} stroke={mapping[i] !== undefined ? lineColour(i) : left === i ? 'var(--accent)' : 'var(--muted)'} fill={mapping[i] !== undefined || left === i ? (mapping[i] !== undefined ? lineColour(i) : 'var(--accent)') : 'var(--surface)'} /> : null
+          )}
+          {Object.entries(pts.r).map(([r, p]) => {
+            const owner = Object.entries(mapping).find(([, v]) => v === Number(r))?.[0]
+            const c = owner !== undefined ? lineColour(Number(owner)) : 'var(--muted)'
+            return <circle key={`r${r}`} cx={p.x} cy={p.y} r={5} strokeWidth={2} stroke={c} fill={owner !== undefined ? c : 'var(--surface)'} />
+          })}
+        </svg>
+        <div className="flex min-w-0 flex-1 flex-col gap-4" data-match="terms">
+          {q.payload.pairs.map((p, i) => (
+            <button
+              key={i}
+              ref={(el) => {
+                leftEls.current[i] = el
+              }}
+              disabled={disabled}
+              onClick={() => setLeft(left === i ? null : i)}
+              className={cx(
+                'min-h-14 rounded-xl border-2 bg-surface px-4 py-3 text-left text-[0.95rem] font-semibold transition-[border-color,background,box-shadow] duration-200',
+                left === i ? 'border-accent bg-accent-soft shadow-[0_0_0_3px_var(--accent-soft)]' : 'border-line',
+                !disabled && left !== i && 'hover:border-accent',
+                mark && wrong.has(i) && 'border-bad'
+              )}
+            >
+              <Markdown>{p.left}</Markdown>
+              {mark && wrong.has(i) && <div className="mt-1 text-[0.82rem] font-medium text-good">→ {p.right}</div>}
+            </button>
+          ))}
         </div>
-        <div className="flex flex-col gap-2">
-          {rights.map(({ text, i: r }) => {
-            const owner = Object.entries(mapping).find(([, v]) => v === r)?.[0]
-            return (
-              <button
-                key={r}
-                disabled={disabled}
-                onClick={() => pickRight(r)}
-                style={owner !== undefined && !mark ? { borderColor: colorOf(Number(owner)), background: `color-mix(in oklab, ${colorOf(Number(owner))} 12%, var(--surface))` } : undefined}
-                className={cx(
-                  'min-h-14 rounded-xl border-2 border-line bg-surface px-4 py-3 text-left text-[0.92rem] transition-[transform,border-color,background] duration-300 ease-out-soft',
-                  !disabled && left !== null && 'hover:-translate-x-1 hover:border-accent'
-                )}
-              >
-                <Markdown>{text}</Markdown>
-              </button>
-            )
-          })}
+        <div className="flex min-w-0 flex-1 flex-col gap-4" data-match="meanings">
+          {rights.map(({ text, i: r }) => (
+            <button
+              key={r}
+              ref={(el) => {
+                rightEls.current[r] = el
+              }}
+              disabled={disabled}
+              onClick={() => pickRight(r)}
+              className={cx(
+                'min-h-14 rounded-xl border-2 border-line bg-surface px-4 py-3 text-left text-[0.92rem] transition-[border-color,background] duration-200',
+                !disabled && (left !== null || joined.has(r)) && 'hover:border-accent'
+              )}
+            >
+              <Markdown>{text}</Markdown>
+            </button>
+          ))}
         </div>
       </div>
       {!disabled && (

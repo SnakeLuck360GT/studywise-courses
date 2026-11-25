@@ -45,6 +45,14 @@ await win.waitForTimeout(1500)
 await win.evaluate(([id, a]) => window.studywise.courses.addWeek({ courseId: id, label: 'Week 2', files: [a] }), [course.id, pdf])
 await win.evaluate((id) => window.studywise.courses.addWeek({ courseId: id, label: 'Week 3' }), course.id)
 await win.waitForTimeout(1500)
+// Weeks with files are planned into topics (a job; the mock AI is quick).
+const planned = await win.evaluate((id) => window.studywise.courses.get({ id }), course.id)
+for (const w of planned.weeks.slice(0, 2)) await win.evaluate((weekId) => window.studywise.courses.plan({ weekId }), w.id)
+for (let i = 0; i < 40; i++) {
+  const c = await win.evaluate((id) => window.studywise.courses.get({ id }), course.id)
+  if (c.weeks.slice(0, 2).every((w) => w.topics.length)) break
+  await win.waitForTimeout(300)
+}
 const full = await win.evaluate((id) => window.studywise.courses.get({ id }), course.id)
 const c1 = { topics: full.weeks.flatMap((w) => w.topics) }
 await win.evaluate((ids) => window.studywise.courses.write({ topicIds: ids }), c1.topics.slice(0, 2).map((t) => t.id))
@@ -67,12 +75,16 @@ await win.locator('main').evaluate((m) => m.closest('.overflow-y-auto')?.scrollT
 // Learn topic 2 first so topic 1 can pull recall cards from it later.
 const t = c1.topics[1]
 await win.evaluate((id) => window.studywise.courses.progress({ topicId: id, progress: { section: 1, done: false, answered: 0, correct: 0, checkScore: null, checkTotal: null, lastStudied: null } }), c1.topics[0].id)
-await win.locator('main li', { hasText: t.plan.title }).first().click()
+// Topics are on the week page.
+await win.locator('main', { hasText: 'Week 1' }).getByText('Week 1', { exact: true }).first().click()
+await win.waitForTimeout(600)
+await shot('week-page')
+await win.locator('main').getByRole('button', { name: /^Start$/ }).first().click()
 await win.waitForTimeout(700)
 
 const types = []
 try {
-for (let step = 0; step < 40; step++) {
+for (let step = 0; step < 60; step++) {
   await win.waitForTimeout(500)
   const body = await win.locator('main').innerText()
   if (/Topic done/.test(body)) break
@@ -82,11 +94,14 @@ for (let step = 0; step < 40; step++) {
     await win.getByRole('button', { name: /Got it/ }).click()
     continue
   }
-  if (/Key terms\s*Card \d+ of \d+/.test(body)) {
-    await shot(`cards-${step}`)
-    await win.getByRole('button', { name: /Show answer/ }).click()
-    await shot(`cards-${step}-flipped`, 300)
-    await win.getByRole('button', { name: /Next card|On to the questions/ }).click()
+  if (/Key terms[\s\S]{0,20}?\d+ of \d+ done/.test(body)) {
+    // Red, yellow, green: each card is learnt after two greens.
+    if (await win.getByRole('button', { name: /Show answer/ }).count()) {
+      await shot(`cards-${step}`)
+      await win.getByRole('button', { name: /Show answer/ }).click()
+      await shot(`cards-${step}-flipped`)
+    }
+    await win.keyboard.press('3')
     continue
   }
   if (/Start the test/.test(body)) {
@@ -116,12 +131,13 @@ for (let step = 0; step < 40; step++) {
     await win.getByRole('button', { name: /Check order/ }).click()
   } else if (/Match up/.test(label)) {
     await shot('match')
-    const left = win.locator('main .grid.grid-cols-2 > div').nth(0).locator('button')
-    const right = win.locator('main .grid.grid-cols-2 > div').nth(1).locator('button')
+    const left = win.locator('main [data-match="terms"] button')
+    const right = win.locator('main [data-match="meanings"] button')
     const rc = await right.count()
     for (let i = 0; i < rc; i++) {
       await left.nth(i).click()
       await right.nth(i).click()
+      if (i === rc - 2) await shot('match-joined')
     }
     await win.getByRole('button', { name: /Check matches/ }).click()
   } else if (/Sort/.test(label)) {
@@ -145,16 +161,21 @@ for (let step = 0; step < 40; step++) {
   console.log(String(e).slice(0, 300))
 }
 await shot('summary')
-await win.getByRole('button', { name: 'Back to course', exact: true }).click()
+// Back to the week page (the topic test may still be going: Save & exit).
+const back = win.getByRole('button', { name: /Back to (course|week)|Save & exit/ }).first()
+if (await back.count()) await back.click()
 await win.waitForTimeout(600)
-await shot('course-after')
+await shot('week-after')
 
 // Dark mode, one notes screen.
 await win.evaluate(() => window.studywise.settings.set({ key: 'ui.theme', value: 'dark' }))
 await win.evaluate(() => document.documentElement.classList.add('dark'))
-await win.locator('main li', { hasText: c1.topics[0].plan.title }).first().click()
-await win.waitForTimeout(700)
-await shot('dark-notes')
+const start = win.locator('main').getByRole('button', { name: /^(Start|Continue)$/ }).first()
+if (await start.count()) {
+  await start.click()
+  await win.waitForTimeout(700)
+  await shot('dark-notes')
+}
 
 console.log(JSON.stringify({ types, errors }, null, 1))
 await app.close()
