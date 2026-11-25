@@ -1,5 +1,5 @@
 // Builds the Android app (a debug APK you can install directly) after
-// `npm run android:sync`. Finds a JDK Gradle can run on (17–21) and the Android
+// `npm run android:sync`. Finds a JDK Gradle can run on (21–24) and the Android
 // SDK, then copies the APK to release/Studywise-android.apk.
 //
 //   JAVA_HOME=...  use this JDK
@@ -27,7 +27,7 @@ function javaVersion(home) {
 function findJdk() {
   const ok = (h) => {
     const v = h && javaVersion(h)
-    return v && v >= 17 && v <= 24 ? h : null
+    return v && v >= 21 && v <= 24 ? h : null
   }
   if (ok(process.env.JAVA_HOME)) return process.env.JAVA_HOME
   const dirs = win
@@ -52,7 +52,7 @@ function findSdk() {
 
 const jdk = findJdk()
 if (!jdk) {
-  console.error('No JDK 17–24 found for Gradle. Install JDK 21 (e.g. Temurin) and set JAVA_HOME to it.')
+  console.error('No JDK 21–24 found for Gradle (Capacitor needs 21). Install JDK 21 (e.g. Temurin) and set JAVA_HOME to it.')
   process.exit(1)
 }
 const sdk = findSdk()

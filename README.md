@@ -70,7 +70,7 @@ The marketplace runs on [studywise-server](https://github.com/SnakeLuck360GT/stu
 
 The phone app has your courses, decks, flashcards and notes, and works offline. It syncs with the computer over Wi‑Fi, and anything that needs AI runs on the computer.
 
-1. Build it with `npm run android:apk` (needs Android Studio, or the Android SDK and JDK 17–21) and install `release/Studywise-android.apk`.
+1. Build it with `npm run android:apk` (needs Android Studio, or the Android SDK and JDK 21) and install `release/Studywise-android.apk`.
 2. On the computer: Settings → Devices → turn on syncing → **Pair a device**.
 3. On the phone: Settings → Sync, and type the address and code the computer shows.
 
