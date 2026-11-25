@@ -13,6 +13,7 @@ const marketAdded = new Map<string, number>()
 import { useStore, toast, type Route } from './lib/store'
 import { api, onEvent, errorText } from './lib/api'
 import { startCommandDispatch, useCommands, runCommand } from './lib/commands'
+import { startArrowNav } from './lib/arrowNav'
 import { askText, confirmDialog, chooseDialog, DialogHost } from './lib/dialogs'
 import { GooNav } from './components/GooNav'
 import { CommandPalette } from './components/CommandPalette'
@@ -63,6 +64,7 @@ export function App() {
   // Boot: settings, last route, claude status, jobs.
   useEffect(() => {
     startCommandDispatch()
+    startArrowNav()
     void (async () => {
       const s = await api.settings.all()
       if (s[OFFLINE_SETTING] === true) useStore.getState().setOffline(true, { save: false, quiet: true })
@@ -367,7 +369,8 @@ export function App() {
     }
   }, [])
 
-  const pageKey = `${route.name}:${(route as { id?: string; deckId?: string }).id ?? (route as { deckId?: string }).deckId ?? ''}`
+  // Notes stays mounted while you move between notes, so its folder tree keeps its place.
+  const pageKey = route.name === 'notes' ? 'notes' : `${route.name}:${(route as { id?: string; deckId?: string }).id ?? (route as { deckId?: string }).deckId ?? ''}`
 
   const studying = IS_MOBILE && STUDY_ROUTES.includes(route.name)
   return (

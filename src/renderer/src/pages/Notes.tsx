@@ -8,6 +8,10 @@ import {
   Plus,
   FileText,
   Folder as FolderIcon,
+  FolderOpen,
+  FilePlus,
+  MoreHorizontal,
+  Pencil,
   ChevronRight,
   FolderPlus,
   Search,
@@ -36,12 +40,11 @@ import { NOTE_TYPES } from '@shared/types'
 import { useStore, toast } from '../lib/store'
 import { IS_MOBILE } from '../lib/platform'
 import { api, onEvent, streamCall, errorText } from '../lib/api'
-import { folderPath, folderTree, groupByFolderTree, useCollapsedFolders, withSubfolders, type TreeGroup } from '../lib/collapsed'
+import { folderPath, folderTree, withSubfolders } from '../lib/collapsed'
 import { useCommands, runCommand } from '../lib/commands'
 import { askText, confirmDialog, chooseDialog } from '../lib/dialogs'
 import { Markdown } from '../components/Markdown'
 import { Button, Dots, Empty, Input, Menu, MenuItem, Select, Segmented, cx, Pill } from '../components/ui'
-import { RailItem } from './Decks'
 
 type NoteMeta = Omit<Note, 'content'>
 type View = 'edit' | 'split' | 'preview'
@@ -69,6 +72,47 @@ const cmTheme = EditorView.theme({
   '.cm-cursor': { borderLeftColor: 'var(--accent)', borderLeftWidth: '2px' }
 })
 
+// Notes are a file tree: folders open in place with their notes right under
+// them (the way Finder or Obsidian shows them), and a folder you pick shows its
+// notes and folders on the right until you open one.
+const OPEN_KEY = 'sw.noteTreeOpen'
+let lastFolder: string | null = null
+const NOTE_DRAG = 'application/x-studywise-note'
+
+function readOpen(): Set<string> {
+  try {
+    const v = JSON.parse(localStorage.getItem(OPEN_KEY) ?? '[]')
+    return new Set(Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+/** Folder ids from the top down to this one. */
+function chainTo(folders: Folder[], id: string | null): string[] {
+  const byId = new Map(folders.map((f) => [f.id, f]))
+  const out: string[] = []
+  for (let f = id ? byId.get(id) : undefined; f && out.length < 20; f = f.parent_id ? byId.get(f.parent_id) : undefined) out.unshift(f.id)
+  return out
+}
+
+/** Focus a folder's row in the tree (its name). */
+const focusFolder = (root: HTMLElement | null, id: string | null) => root?.querySelector<HTMLElement>(`[data-folder="${id}"] [data-name]`)?.focus()
+
+const noteMeta = (n: NoteMeta) => [n.module, n.type, n.week && `Week ${n.week}`].filter(Boolean).join(' · ')
+
+function edited(iso: string): string {
+  const d = new Date(iso)
+  const days = Math.floor((Date.now() - d.getTime()) / 86_400_000)
+  if (days < 1 && new Date().toDateString() === d.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  if (days < 7) return d.toLocaleDateString([], { weekday: 'long' })
+  return d.toLocaleDateString([], {
+    day: 'numeric',
+    month: 'short',
+    year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric'
+  })
+}
+
 export function Notes({ noteId }: { noteId: string | null }) {
   const go = useStore((s) => s.go)
   const version = useStore((s) => s.version)
@@ -76,43 +120,160 @@ export function Notes({ noteId }: { noteId: string | null }) {
   const jobs = useStore((s) => s.jobs)
   const [notes, setNotes] = useState<NoteMeta[]>([])
   const [folders, setFolders] = useState<Folder[]>([])
-  const [folderId, setFolderId] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  // The folder picked in the tree: shown on the right when no note is open, and where new notes go.
+  // Remembered while the app is open, so coming back to Notes shows the same folder.
+  const [folderId, setFolderState] = useState<string | null>(() => lastFolder)
+  const setFolderId = useCallback((id: string | null) => setFolderState((lastFolder = id)), [])
+  const pane = useRef<HTMLDivElement>(null)
   const [q, setQ] = useState('')
+  const [open, setOpenSet] = useState(readOpen)
+  const [dropOn, setDropOn] = useState<string | null>(null)
+  const list = useRef<HTMLDivElement>(null)
 
   const load = useCallback(() => {
-    void api.notes.list().then(setNotes)
-    void api.folders.list({ kind: 'note' }).then(setFolders)
+    void Promise.all([api.notes.list(), api.folders.list({ kind: 'note' })]).then(([n, f]) => {
+      setNotes(n)
+      setFolders(f)
+      setLoaded(true)
+    })
   }, [])
   useEffect(load, [load, version])
 
-  // A folder shows its own notes and the ones in folders inside it.
-  const inFolder = useMemo(() => (folderId ? withSubfolders(folders, folderId) : null), [folders, folderId])
-  const shown = useMemo(
-    () => notes.filter((n) => (!inFolder || (n.folder_id && inFolder.has(n.folder_id))) && `${n.title} ${n.module}`.toLowerCase().includes(q.toLowerCase())),
-    [notes, inFolder, q]
-  )
-  const tree = useMemo(() => folderTree(folders), [folders])
-  const countIn = (id: string) => {
-    const ids = withSubfolders(folders, id)
-    return notes.filter((n) => n.folder_id && ids.has(n.folder_id)).length
-  }
-  // Notes are listed under their folders (nested), which collapse. A filter shows every match.
-  const { isCollapsed, toggle } = useCollapsedFolders()
-  const groups: TreeGroup<NoteMeta>[] = useMemo(() => {
-    const scope = inFolder ? folders.filter((f) => inFolder.has(f.id)) : folders
-    return scope.length ? groupByFolderTree(shown, scope) : [{ folder: null, items: shown, depth: 0, ancestors: [], total: shown.length }]
-  }, [inFolder, folders, shown])
-  const holdsActive = (g: TreeGroup<NoteMeta>) => g.items.some((n) => n.id === noteId)
-  const isShown = (g: TreeGroup<NoteMeta>) => !!q || holdsActive(g) || g.ancestors.every((a) => !isCollapsed(a))
-  const isOpen = (g: TreeGroup<NoteMeta>) => isShown(g) && (!g.folder || !!q || !isCollapsed(g.folder.id) || holdsActive(g))
-  const visible = groups.flatMap((g) => (isOpen(g) ? g.items : []))
+  const setOpen = useCallback((update: (s: Set<string>) => Set<string>) => {
+    setOpenSet((prev) => {
+      const next = update(new Set(prev))
+      try {
+        localStorage.setItem(OPEN_KEY, JSON.stringify([...next]))
+      } catch {
+        /* storage unavailable: still works for this session */
+      }
+      return next
+    })
+  }, [])
+  const toggle = (id: string) => setOpen((s) => (s.delete(id) ? s : s.add(id)))
+  const expand = (ids: string[]) => ids.length && setOpen((s) => (ids.forEach((id) => s.add(id)), s))
+
+  // Opening a note opens the folders it's in and makes its folder the current one.
+  const activeFolder = notes.find((n) => n.id === noteId)?.folder_id
+  useEffect(() => {
+    if (!noteId || activeFolder === undefined) return
+    setFolderId(activeFolder)
+    expand(chainTo(folders, activeFolder))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteId, activeFolder, folders.length])
+  // …scrolls the tree to it, wherever it is, and starts the note at its top.
+  useEffect(() => {
+    pane.current?.scrollTo({ top: 0 })
+    const sel = noteId ? `[data-note="${noteId}"]` : folderId ? `[data-folder="${folderId}"]` : null
+    if (!sel) return
+    const t = setTimeout(() => list.current?.querySelector(sel)?.scrollIntoView({ block: 'nearest' }), 60)
+    return () => clearTimeout(t)
+  }, [noteId, folderId, loaded])
+  // A deleted folder isn't current any more.
+  useEffect(() => {
+    if (folderId && loaded && !folders.some((f) => f.id === folderId)) setFolderId(null)
+  }, [folders, folderId, loaded])
+
+  const kids = useMemo(() => {
+    const ids = new Set(folders.map((f) => f.id))
+    const m = new Map<string | null, Folder[]>()
+    for (const f of folders) {
+      const p = f.parent_id && ids.has(f.parent_id) ? f.parent_id : null
+      m.set(p, [...(m.get(p) ?? []), f])
+    }
+    for (const l of m.values())
+      l.sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, {
+          numeric: true,
+          sensitivity: 'base'
+        })
+      )
+    return m
+  }, [folders])
+  const notesIn = useMemo(() => {
+    const ids = new Set(folders.map((f) => f.id))
+    const m = new Map<string | null, NoteMeta[]>()
+    for (const n of notes) {
+      const k = n.folder_id && ids.has(n.folder_id) ? n.folder_id : null
+      m.set(k, [...(m.get(k) ?? []), n])
+    }
+    return m
+  }, [notes, folders])
+  const countIn = (id: string) => [...withSubfolders(folders, id)].reduce((n, f) => n + (notesIn.get(f)?.length ?? 0), 0)
+
+  const query = q.trim().toLowerCase()
+  const matches = useMemo(() => (query ? notes.filter((n) => `${n.title} ${n.module} ${n.type} ${n.week}`.toLowerCase().includes(query)) : []), [notes, query])
+  // Notes in the order the tree shows them, for next/previous note.
+  const visible = useMemo(() => {
+    if (query) return matches
+    const out: NoteMeta[] = []
+    const walk = (parent: string | null) => {
+      for (const f of kids.get(parent) ?? []) if (open.has(f.id)) walk(f.id)
+      out.push(...(notesIn.get(parent) ?? []))
+    }
+    walk(null)
+    return out
+  }, [query, matches, kids, notesIn, open])
   const idx = visible.findIndex((n) => n.id === noteId)
   const writing = jobs.find((j) => j.status === 'running' && j.meta?.noteId === noteId)
+
+  const newNote = async (folder: string | null = folderId) => {
+    const n = await api.notes.create({ title: 'Untitled', folder_id: folder })
+    load()
+    go({ name: 'notes', id: n.id })
+  }
+  const newFolder = async (parent: string | null) => {
+    const p = parent ? folders.find((f) => f.id === parent) : null
+    const name = await askText(p ? `New folder in “${p.name}”` : 'New notes folder', { label: 'Folder name', confirmText: 'Create' })
+    if (!name) return
+    await api.folders.create({ name, kind: 'note', parent_id: parent })
+    if (parent) expand([parent])
+    load()
+  }
+  const renameFolder = async (f: Folder) => {
+    const name = await askText('Rename folder', { initial: f.name })
+    if (name) await api.folders.rename({ id: f.id, name }).then(load)
+  }
+  const deleteFolder = async (f: Folder) => {
+    const inside = withSubfolders(folders, f.id).size - 1
+    if (await confirmDialog(`Delete folder “${f.name}”?`, inside ? `The ${inside} folder${inside === 1 ? '' : 's'} inside it go too. Notes are kept.` : 'Notes inside are kept.', { danger: true })) {
+      await api.folders.delete({ id: f.id })
+      if (folderId && withSubfolders(folders, f.id).has(folderId)) setFolderId(null)
+      load()
+    }
+  }
+  const revisionOrder = async (scope: string | null) => {
+    const name = scope ? folders.find((f) => f.id === scope)?.name : null
+    try {
+      const r = await api.notes.revisionOrder({ folderId: scope })
+      load()
+      toast(`${name ? `${name}: ` : ''}${r.ordered} note${r.ordered === 1 ? '' : 's'} in revision order (by week, then lecture or topic)`, 'good')
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    }
+  }
+  const moveNote = async (id: string, to: string | null) => {
+    const n = notes.find((x) => x.id === id)
+    if (!n || (n.folder_id ?? null) === to) return
+    await api.notes.update({ id, patch: { folder_id: to } })
+    if (to) expand(chainTo(folders, to))
+    load()
+    toast(`Moved “${n.title}” to ${to ? folders.find((f) => f.id === to)?.name : 'All notes'}`, 'good')
+  }
+  // Picking a folder in the tree opens it and shows it on the right (closing the note there).
+  const pickFolder = (id: string | null) => {
+    setFolderId(id)
+    if (id) expand(chainTo(folders, id))
+    if (noteId) go({ name: 'notes', id: null })
+  }
 
   useCommands(
     {
       'go.nextDeck': () => visible[idx + 1] && go({ name: 'notes', id: visible[idx + 1].id }),
       'go.prevDeck': () => idx > 0 && go({ name: 'notes', id: visible[idx - 1].id }),
+      'note.new': () => void newNote(),
+      'folder.new': () => void newFolder(folderId),
       'io.importNotes': async () => {
         const ids = await api.io.importNotes({ folderId })
         if (ids.length) {
@@ -122,155 +283,441 @@ export function Notes({ noteId }: { noteId: string | null }) {
         }
       }
     },
-    [visible, idx, folderId]
+    [visible, idx, folderId, folders, notes]
   )
 
-  const noteRow = (n: NoteMeta, depth: number | null) => (
-    <button
-      key={n.id}
-      onClick={() => go({ name: 'notes', id: n.id })}
-      className={cx('flex flex-col rounded-lg py-2 pr-3 text-left transition-colors duration-200', n.id === noteId ? 'bg-accent-soft' : 'hover:bg-surface-2')}
-      style={{ paddingLeft: depth === null ? 12 : 36 + depth * 16 }}
-    >
-      <span className="flex items-center gap-1.5 truncate font-semibold">
-        {jobs.some((j) => j.status === 'running' && j.meta?.noteId === n.id) && <span className="pulse-dot size-2 shrink-0 rounded-full bg-accent" />}
-        <span className="truncate">{n.title}</span>
-      </span>
-      <span className="truncate text-[0.78rem] text-muted">{[n.module, n.type, n.week && `Week ${n.week}`].filter(Boolean).join(' · ') || new Date(n.updated_at).toLocaleDateString()}</span>
-    </button>
-  )
+  // Dropping a dragged note on a folder (or on All notes) moves it there.
+  const dropTarget = (target: string | null) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(NOTE_DRAG)) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      setDropOn(target ?? 'root')
+    },
+    onDragLeave: () => setDropOn((d) => (d === (target ?? 'root') ? null : d)),
+    onDrop: (e: React.DragEvent) => {
+      const id = e.dataTransfer.getData(NOTE_DRAG)
+      setDropOn(null)
+      if (id) {
+        e.preventDefault()
+        void moveNote(id, target)
+      }
+    }
+  })
+
+  const noteRow = (n: NoteMeta, depth: number, path?: string) => {
+    const active = n.id === noteId
+    const running = jobs.some((j) => j.status === 'running' && j.meta?.noteId === n.id)
+    return (
+      <button
+        key={n.id}
+        data-note={n.id}
+        draggable={!IS_MOBILE}
+        onDragStart={(e) => {
+          e.dataTransfer.setData(NOTE_DRAG, n.id)
+          e.dataTransfer.effectAllowed = 'move'
+        }}
+        onDragEnd={() => setDropOn(null)}
+        onClick={() => go({ name: 'notes', id: n.id })}
+        onKeyDown={(e) => {
+          // ← goes up to the note's folder in the tree.
+          if (e.key === 'ArrowLeft' && n.folder_id && !query) {
+            e.preventDefault()
+            focusFolder(list.current, n.folder_id)
+          }
+        }}
+        title={[n.title, noteMeta(n)].filter(Boolean).join('\n')}
+        className={cx(
+          'flex min-h-8 w-full items-center gap-2 rounded-lg py-1.5 pr-2 text-left text-[0.9rem] transition-colors duration-150',
+          active ? 'bg-accent-soft font-semibold text-ink' : 'text-ink/85 hover:bg-surface-2'
+        )}
+        style={{ paddingLeft: 10 + depth * 14 + 18 }}
+      >
+        {running ? <span className="pulse-dot mx-[3px] size-2 shrink-0 rounded-full bg-accent" /> : <FileText className={cx('size-3.5 shrink-0', active ? 'text-accent' : 'text-muted')} />}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{n.title || 'Untitled'}</span>
+          {path && <span className="block truncate text-[0.76rem] font-normal text-muted">{path}</span>}
+        </span>
+      </button>
+    )
+  }
+
+  const folderNode = (f: Folder, depth: number): React.ReactNode => {
+    const isOpen = open.has(f.id)
+    const current = folderId === f.id && !noteId
+    const subs = kids.get(f.id) ?? []
+    const own = notesIn.get(f.id) ?? []
+    return (
+      <div key={f.id} role="treeitem" aria-expanded={isOpen}>
+        <div
+          {...dropTarget(f.id)}
+          data-folder={f.id}
+          className={cx(
+            'group flex min-h-8 items-center rounded-lg transition-colors duration-150',
+            dropOn === f.id ? 'bg-accent-soft ring-2 ring-accent/40' : current ? 'bg-accent-soft' : 'hover:bg-surface-2'
+          )}
+        >
+          <button
+            onClick={() => toggle(f.id)}
+            aria-label={isOpen ? `Close ${f.name}` : `Open ${f.name}`}
+            className="grid h-8 w-6 shrink-0 place-items-center text-muted hover:text-ink"
+            style={{ marginLeft: 4 + depth * 14 }}
+          >
+            <ChevronRight className={cx('size-3.5 transition-transform duration-200', isOpen && 'rotate-90')} />
+          </button>
+          <button
+            data-name
+            onClick={() => {
+              if (folderId === f.id && !noteId) toggle(f.id)
+              else pickFolder(f.id)
+            }}
+            onKeyDown={(e) => {
+              // → opens a closed folder; ← closes an open one, or goes up to the folder it's in.
+              if (e.key === 'ArrowRight' && !isOpen) {
+                e.preventDefault()
+                toggle(f.id)
+              } else if (e.key === 'ArrowLeft') {
+                e.preventDefault()
+                if (isOpen) toggle(f.id)
+                else if (f.parent_id) focusFolder(list.current, f.parent_id)
+              }
+            }}
+            className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left text-[0.9rem] font-medium"
+          >
+            {isOpen ? <FolderOpen className="size-4 shrink-0 text-accent" /> : <FolderIcon className="size-4 shrink-0 text-muted" />}
+            <span className="min-w-0 flex-1 truncate">{f.name}</span>
+          </button>
+          <span className={cx('pr-2 text-[0.76rem] text-muted tabular-nums', !IS_MOBILE && 'group-hover:hidden')}>{countIn(f.id) || ''}</span>
+          <span className={cx('items-center pr-1', IS_MOBILE ? 'flex' : 'hidden group-hover:flex')}>
+            <button onClick={() => void newNote(f.id)} className="rounded-md p-1 text-muted hover:bg-surface hover:text-ink" title={`New note in ${f.name}`} aria-label={`New note in ${f.name}`}>
+              <Plus className="size-3.5" />
+            </button>
+            <Menu
+              trigger={(t) => (
+                <button onClick={t} className="rounded-md p-1 text-muted hover:bg-surface hover:text-ink" aria-label={`${f.name} menu`}>
+                  <MoreHorizontal className="size-3.5" />
+                </button>
+              )}
+            >
+              {(close) => (
+                <>
+                  <MenuItem icon={<FilePlus className="size-4" />} onClick={() => (close(), void newNote(f.id))}>
+                    New note here
+                  </MenuItem>
+                  <MenuItem icon={<FolderPlus className="size-4" />} onClick={() => (close(), void newFolder(f.id))}>
+                    New folder inside
+                  </MenuItem>
+                  <MenuItem icon={<ListOrdered className="size-4" />} onClick={() => (close(), void revisionOrder(f.id))}>
+                    Put in revision order
+                  </MenuItem>
+                  <MenuItem icon={<Pencil className="size-4" />} onClick={() => (close(), void renameFolder(f))}>
+                    Rename
+                  </MenuItem>
+                  <MenuItem danger icon={<Trash2 className="size-4" />} onClick={() => (close(), void deleteFolder(f))}>
+                    Delete folder
+                  </MenuItem>
+                </>
+              )}
+            </Menu>
+          </span>
+        </div>
+        {isOpen && (
+          <div role="group" className="relative">
+            <span className="pointer-events-none absolute top-0 bottom-1 w-px bg-line" style={{ left: 4 + depth * 14 + 12 }} />
+            {subs.map((s) => folderNode(s, depth + 1))}
+            {own.map((n) => noteRow(n, depth + 1))}
+            {!subs.length && !own.length && (
+              <div className="py-1.5 text-[0.82rem] text-muted" style={{ paddingLeft: 10 + (depth + 1) * 14 + 18 }}>
+                Empty.{' '}
+                <button onClick={() => void newNote(f.id)} className="text-accent hover:underline">
+                  New note
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const tops = kids.get(null) ?? []
+  const loose = notesIn.get(null) ?? []
 
   return (
     <div className="flex h-full">
-      {/* Narrow screens (and the phone): the list fills the screen until a note is open. */}
+      {/* Narrow screens (and the phone): the tree fills the screen until a note is open. */}
       <aside
         className={cx(
           'flex shrink-0 flex-col overflow-hidden border-r border-line transition-[width,opacity] duration-500 ease-out-soft',
-          rail ? 'w-[290px] opacity-100' : 'w-0 opacity-0',
+          rail ? 'w-[300px] opacity-100' : 'w-0 opacity-0',
           noteId ? 'max-md:hidden' : 'max-md:w-full max-md:border-r-0 max-md:opacity-100'
         )}
       >
-        <div className="flex w-[290px] flex-col gap-2 p-4 pb-2 max-md:w-full">
+        <div className="flex w-[300px] flex-col gap-2 p-4 pb-2 max-md:w-full">
           <div className="flex gap-2">
-            <Button variant="primary" size="sm" className="flex-1 justify-center" onClick={() => runCommand('note.new')}>
-              New note
+            <Button
+              variant="primary"
+              size="sm"
+              className="flex-1 justify-center"
+              onClick={() => void newNote()}
+              title={folderId ? `New note in ${folders.find((f) => f.id === folderId)?.name}` : 'New note'}
+            >
+              <Plus className="size-4" /> New note
             </Button>
-            <Button size="sm" onClick={() => runCommand('gen.notes')} title={keyLabel("Generate notes with AI (⇧⌘G)")}>
-              AI
+            <Button size="sm" onClick={() => runCommand('gen.notes')} title={keyLabel('Generate notes with AI (⇧⌘G)')}>
+              <Sparkles className="size-4" /> AI
             </Button>
-            <Button size="icon" variant="ghost" className="desktop-only" onClick={() => runCommand('io.importNotes')} title={keyLabel("Import Markdown / Notion (⌥⌘I)")}>
+            <Button size="icon" variant="ghost" className="desktop-only" onClick={() => runCommand('io.importNotes')} title={keyLabel('Import Markdown / Notion (⌥⌘I)')}>
               <Upload className="size-4" />
             </Button>
           </div>
           <div className="relative">
             <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter notes…" className="h-9 pl-9 text-[0.9rem]" />
+            <Input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQ('')} placeholder="Search notes…" className="h-9 pl-9 text-[0.9rem]" />
+            {q && (
+              <button onClick={() => setQ('')} className="absolute top-1/2 right-2 -translate-y-1/2 rounded-md p-1 text-muted hover:text-ink" aria-label="Clear search">
+                <X className="size-3.5" />
+              </button>
+            )}
           </div>
         </div>
-        <div className="flex w-[290px] flex-1 flex-col gap-0.5 overflow-y-auto px-3 pb-4 max-md:w-full">
-          <div className="mt-1 mb-1 flex items-center justify-between px-2 text-[0.72rem] font-semibold text-muted">
-            Folders
-            <button
-              onClick={async () => {
-                const name = await askText('New notes folder', { label: 'Folder name' })
-                if (name) await api.folders.create({ name, kind: 'note' }).then(load)
-              }}
-              className="rounded-full p-1 hover:bg-surface-2"
-            >
-              <FolderPlus className="size-4" />
-            </button>
-          </div>
-          <RailItem active={!folderId} onClick={() => setFolderId(null)} label="All notes" count={notes.length} />
-          {tree.map(({ folder: f, depth }) => (
-            <RailItem
-              key={f.id}
-              active={folderId === f.id}
-              onClick={() => setFolderId(f.id)}
-              label={f.name}
-              depth={depth}
-              count={countIn(f.id)}
-              onAddChild={async () => {
-                const name = await askText(`New folder in “${f.name}”`, { label: 'Folder name' })
-                if (name) await api.folders.create({ name, kind: 'note', parent_id: f.id }).then(load)
-              }}
-              onRename={async () => {
-                const name = await askText('Rename folder', { initial: f.name })
-                if (name) await api.folders.rename({ id: f.id, name }).then(load)
-              }}
-              onDelete={async () => {
-                const inside = withSubfolders(folders, f.id).size - 1
-                if (await confirmDialog(`Delete folder “${f.name}”?`, inside ? `The ${inside} folder${inside === 1 ? '' : 's'} inside it go too. Notes are kept.` : 'Notes inside are kept.', { danger: true })) {
-                  await api.folders.delete({ id: f.id })
-                  setFolderId(null)
-                  load()
-                }
-              }}
-            />
-          ))}
-          <div className="mx-2 my-2 border-t border-line" />
-          {notes.length > 1 && (
-            <div className="mb-1 flex items-center justify-between px-2 text-[0.72rem] font-semibold text-muted">
-              Notes
-              <button
-                onClick={async () => {
-                  const scope = folderId ? folders.find((f) => f.id === folderId)?.name : null
-                  try {
-                    const r = await api.notes.revisionOrder({ folderId })
-                    load()
-                    toast(`${scope ? `${scope}: ` : ''}${r.ordered} note${r.ordered === 1 ? '' : 's'} in revision order (by week, then lecture or topic)`, 'good')
-                  } catch (e) {
-                    toast(errorText(e), 'bad')
-                  }
-                }}
-                className="flex items-center gap-1 rounded-full px-2 py-1 font-medium hover:bg-surface-2 hover:text-ink"
-                title={folderId ? 'Put the notes in this folder (and its folders) in revision order: by week, then lecture or topic' : 'Put every folder’s notes in revision order: by week, then lecture or topic'}
+        <div ref={list} role="tree" className="flex w-[300px] flex-1 flex-col overflow-y-auto px-2 pb-6 max-md:w-full">
+          {query ? (
+            <>
+              <div className="px-2.5 pt-1 pb-1.5 text-[0.75rem] font-semibold text-muted">{matches.length ? `${matches.length} note${matches.length === 1 ? '' : 's'}` : 'No notes match'}</div>
+              {matches.map((n) => noteRow(n, -1, n.folder_id ? folderPath(folders, n.folder_id) : undefined))}
+            </>
+          ) : (
+            <>
+              <div
+                {...dropTarget(null)}
+                className={cx(
+                  'group mb-1 flex min-h-8 items-center rounded-lg transition-colors',
+                  dropOn === 'root' ? 'bg-accent-soft ring-2 ring-accent/40' : !folderId && !noteId ? 'bg-accent-soft' : 'hover:bg-surface-2'
+                )}
               >
-                <ListOrdered className="size-3.5" /> Revision order
-              </button>
-            </div>
+                <button onClick={() => pickFolder(null)} className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-3 text-left text-[0.9rem] font-medium">
+                  <Layers className="size-4 shrink-0 text-muted" />
+                  <span className="flex-1">All notes</span>
+                  <span className="pr-1 text-[0.76rem] text-muted tabular-nums">{notes.length || ''}</span>
+                </button>
+                <button onClick={() => void newFolder(null)} className="rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink" title="New folder" aria-label="New folder">
+                  <FolderPlus className="size-4" />
+                </button>
+                {notes.length > 1 && (
+                  <button
+                    onClick={() => void revisionOrder(null)}
+                    className="mr-1 rounded-md p-1.5 text-muted hover:bg-surface hover:text-ink"
+                    title="Put every folder’s notes in revision order: by week, then lecture or topic"
+                    aria-label="Revision order"
+                  >
+                    <ListOrdered className="size-4" />
+                  </button>
+                )}
+              </div>
+              <div className="stagger flex flex-col">
+                {tops.map((f) => folderNode(f, 0))}
+                {loose.map((n) => noteRow(n, -1))}
+              </div>
+              {loaded && !folders.length && !notes.length && <p className="px-3 py-4 text-[0.85rem] text-muted">No notes or folders yet.</p>}
+            </>
           )}
-          <div className="stagger flex flex-col gap-0.5">
-            {groups.filter(isShown).map((g) => {
-              const open = isOpen(g)
-              return (
-                <div key={g.folder?.id ?? 'loose'} className="flex flex-col gap-0.5">
-                  {g.folder && (
-                    <button
-                      onClick={() => toggle(g.folder!.id)}
-                      aria-expanded={open}
-                      className="flex items-center gap-1.5 rounded-lg py-1.5 pr-2 text-left text-[0.86rem] font-semibold text-muted transition-colors hover:bg-surface-2 hover:text-ink"
-                      style={{ paddingLeft: 8 + g.depth * 16 }}
-                    >
-                      <ChevronRight className={cx('size-3.5 shrink-0 transition-transform duration-200', open && 'rotate-90')} />
-                      <FolderIcon className="size-3.5 shrink-0" />
-                      <span className="min-w-0 flex-1 truncate">{g.folder.name}</span>
-                      <span className="text-[0.78rem] font-normal">{g.total}</span>
-                    </button>
-                  )}
-                  {open && g.items.map((n) => noteRow(n, g.folder ? g.depth : null))}
-                </div>
-              )
-            })}
-          </div>
         </div>
       </aside>
-      <div className={cx('min-w-0 flex-1 overflow-y-auto', !noteId && 'max-md:hidden')}>
+      <div ref={pane} className={cx('min-w-0 flex-1 overflow-y-auto', !noteId && 'max-md:hidden')}>
         {noteId ? (
-          <NoteEditor key={noteId} id={noteId} writingJobId={writing?.id ?? null} folders={folders} onChanged={load} />
-        ) : (
+          <NoteEditor key={noteId} id={noteId} writingJobId={writing?.id ?? null} folders={folders} onChanged={load} onOpenFolder={pickFolder} />
+        ) : loaded && !notes.length && !folders.length ? (
           <div className="mx-auto max-w-xl p-8">
-            <Empty title={notes.length ? 'Pick a note' : 'No notes yet'}>
+            <Empty title="No notes yet">
               Write notes by hand, import Markdown or a Notion export, or drop a PDF to have AI write structured notes in your style.
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 <Button variant="primary" onClick={() => runCommand('gen.notes')}>
                   Generate with AI
                 </Button>
-                <Button onClick={() => runCommand('note.new')}>New note</Button>
+                <Button onClick={() => void newNote()}>New note</Button>
               </div>
             </Empty>
           </div>
-        )}
+        ) : loaded ? (
+          <FolderView
+            folder={folders.find((f) => f.id === folderId) ?? null}
+            folders={folders}
+            subfolders={kids.get(folderId) ?? []}
+            notes={folderId ? (notesIn.get(folderId) ?? []) : [...notes].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 12)}
+            countIn={countIn}
+            onOpenFolder={pickFolder}
+            onNewNote={() => void newNote()}
+            onNewFolder={() => void newFolder(folderId)}
+            onRevisionOrder={() => void revisionOrder(folderId)}
+            onRename={(f) => void renameFolder(f)}
+            onDelete={(f) => void deleteFolder(f)}
+          />
+        ) : null}
       </div>
+    </div>
+  )
+}
+
+/** "All notes › Physics › Week 2", each part opening that folder. */
+function Crumbs({ folders, id, onOpenFolder, here }: { folders: Folder[]; id: string | null; onOpenFolder: (id: string | null) => void; here?: boolean }) {
+  const chain = chainTo(folders, id)
+  const byId = new Map(folders.map((f) => [f.id, f]))
+  const parts: { id: string | null; name: string }[] = [{ id: null, name: 'All notes' }, ...chain.map((c) => ({ id: c, name: byId.get(c)?.name ?? '' }))]
+  // On a folder's own page the last part is where you are, not a link.
+  const links = here ? parts.slice(0, -1) : parts
+  if (!links.length) return null
+  return (
+    <nav className="flex min-w-0 flex-wrap items-center gap-1 text-[0.82rem] text-muted">
+      {links.map((p, i) => (
+        <span key={p.id ?? 'all'} className="flex min-w-0 items-center gap-1">
+          {i > 0 && <ChevronRight className="size-3 shrink-0" />}
+          <button onClick={() => onOpenFolder(p.id)} className="truncate rounded px-1 hover:bg-surface-2 hover:text-ink">
+            {p.name}
+          </button>
+        </span>
+      ))}
+    </nav>
+  )
+}
+
+function FolderView({
+  folder,
+  folders,
+  subfolders,
+  notes,
+  countIn,
+  onOpenFolder,
+  onNewNote,
+  onNewFolder,
+  onRevisionOrder,
+  onRename,
+  onDelete
+}: {
+  folder: Folder | null
+  folders: Folder[]
+  subfolders: Folder[]
+  notes: NoteMeta[]
+  countIn: (id: string) => number
+  onOpenFolder: (id: string | null) => void
+  onNewNote: () => void
+  onNewFolder: () => void
+  onRevisionOrder: () => void
+  onRename: (f: Folder) => void
+  onDelete: (f: Folder) => void
+}) {
+  const go = useStore((s) => s.go)
+  const total = folder ? countIn(folder.id) : null
+  return (
+    <div className="mx-auto w-full max-w-[920px] px-[clamp(16px,4vw,48px)] py-8">
+      {folder && <Crumbs folders={folders} id={folder.id} onOpenFolder={onOpenFolder} here />}
+      <div className="mt-1 flex flex-wrap items-end gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="flex items-center gap-2.5 truncate text-[clamp(1.4rem,2.4vw,1.8rem)] font-semibold tracking-[-0.02em]">
+            {folder ? <FolderOpen className="size-6 shrink-0 text-accent" /> : <Layers className="size-6 shrink-0 text-accent" />}
+            <span className="truncate">{folder ? folder.name : 'All notes'}</span>
+          </h1>
+          <p className="mt-1 text-[0.88rem] text-muted">
+            {folder
+              ? [total ? `${total} note${total === 1 ? '' : 's'}` : 'No notes yet', subfolders.length && `${subfolders.length} folder${subfolders.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')
+              : 'Pick a folder or a note on the left, or carry on where you left off.'}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="primary" onClick={onNewNote}>
+            <Plus className="size-4" /> New note
+          </Button>
+          <Button size="sm" onClick={onNewFolder}>
+            <FolderPlus className="size-4" /> {folder ? 'Folder inside' : 'New folder'}
+          </Button>
+          {folder && (
+            <Menu
+              trigger={(t) => (
+                <Button size="icon" variant="ghost" onClick={t} aria-label="Folder menu">
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              )}
+            >
+              {(close) => (
+                <>
+                  <MenuItem icon={<ListOrdered className="size-4" />} onClick={() => (close(), onRevisionOrder())}>
+                    Put in revision order
+                  </MenuItem>
+                  <MenuItem icon={<Pencil className="size-4" />} onClick={() => (close(), onRename(folder))}>
+                    Rename
+                  </MenuItem>
+                  <MenuItem danger icon={<Trash2 className="size-4" />} onClick={() => (close(), onDelete(folder))}>
+                    Delete folder
+                  </MenuItem>
+                </>
+              )}
+            </Menu>
+          )}
+        </div>
+      </div>
+
+      {subfolders.length > 0 && (
+        <section className="mt-7">
+          <h2 className="mb-2.5 text-[0.78rem] font-semibold text-muted">Folders</h2>
+          <div className="stagger grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-2.5">
+            {subfolders.map((f) => {
+              const n = countIn(f.id)
+              return (
+                <button
+                  key={f.id}
+                  onClick={() => onOpenFolder(f.id)}
+                  title={f.name}
+                  className="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3.5 text-left transition-colors hover:border-accent/40 hover:bg-surface-2"
+                >
+                  <FolderIcon className="size-5 shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1">
+                    <span className="line-clamp-2 font-semibold leading-snug">{f.name}</span>
+                    <span className="block text-[0.8rem] text-muted">{n ? `${n} note${n === 1 ? '' : 's'}` : 'Empty'}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      <section className="mt-7">
+        <h2 className="mb-2.5 text-[0.78rem] font-semibold text-muted">{folder ? (notes.length ? 'Notes' : '') : 'Recently edited'}</h2>
+        {notes.length ? (
+          <div className="stagger flex flex-col overflow-hidden rounded-xl border border-line bg-surface">
+            {notes.map((n, i) => (
+              <button
+                key={n.id}
+                onClick={() => go({ name: 'notes', id: n.id })}
+                className={cx('flex items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface-2', i > 0 && 'border-t border-line')}
+              >
+                <FileText className="size-4 shrink-0 text-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-semibold">{n.title || 'Untitled'}</span>
+                  {(() => {
+                    const sub = [!folder && n.folder_id ? folderPath(folders, n.folder_id) : null, noteMeta(n)].filter(Boolean).join(' · ')
+                    return sub && <span className="block truncate text-[0.8rem] text-muted">{sub}</span>
+                  })()}
+                </span>
+                <span className="shrink-0 text-[0.8rem] text-muted">{edited(n.updated_at)}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          folder &&
+          !subfolders.length && (
+            <Empty icon={<FolderOpen className="size-6" />} title="This folder is empty">
+              Make a note here, or drag notes onto the folder in the list to move them in.
+              <div className="mt-4 flex justify-center gap-2">
+                <Button variant="primary" onClick={onNewNote}>
+                  New note
+                </Button>
+                <Button onClick={() => runCommand('gen.notes')}>Generate with AI</Button>
+              </div>
+            </Empty>
+          )
+        )}
+      </section>
     </div>
   )
 }
@@ -283,7 +730,7 @@ interface Suggestion {
   streaming: boolean
 }
 
-function NoteEditor({ id, writingJobId, folders, onChanged }: { id: string; writingJobId: string | null; folders: Folder[]; onChanged: () => void }) {
+function NoteEditor({ id, writingJobId, folders, onChanged, onOpenFolder }: { id: string; writingJobId: string | null; folders: Folder[]; onChanged: () => void; onOpenFolder: (id: string | null) => void }) {
   const go = useStore((s) => s.go)
   const openExplain = useStore((s) => s.openExplain)
   const [note, setNote] = useState<Note | null>(null)
@@ -451,7 +898,10 @@ function NoteEditor({ id, writingJobId, folders, onChanged }: { id: string; writ
 
   return (
     <div className="flex min-h-full flex-col">
-      <div className="sticky top-0 z-10 border-b border-line bg-bg/90 px-[clamp(16px,3vw,40px)] pt-5 pb-3 backdrop-blur">
+      <div className="sticky top-0 z-10 border-b border-line bg-bg/90 px-[clamp(16px,3vw,40px)] pt-4 pb-3 backdrop-blur">
+        <div className="-ml-1 mb-1 flex items-center">
+          <Crumbs folders={folders} id={note.folder_id} onOpenFolder={onOpenFolder} />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <input
             value={note.title}

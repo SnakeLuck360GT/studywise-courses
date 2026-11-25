@@ -196,16 +196,19 @@ function General() {
       <Card className="flex flex-col gap-4">
         <h3 className="text-lg font-semibold">Spaced repetition</h3>
         <Segmented
-          value={(s['review.scheduler'] as string) ?? 'adaptive'}
+          value={(s['review.scheduler'] as string) ?? 'studysmarter'}
           onChange={(v) => set('review.scheduler', v)}
           options={[
+            { value: 'studysmarter', label: 'StudySmarter' },
             { value: 'adaptive', label: 'Difficulty-based' },
             { value: 'sm2', label: 'SM-2' }
           ]}
         />
         {!IS_MOBILE && <Toggle checked={s['anki.keepSchedule'] !== false} onChange={(v) => set('anki.keepSchedule', v)} label="Keep review progress when importing Anki decks" />}
         <p className="text-[0.88rem] text-muted">
-          {((s['review.scheduler'] as string) ?? 'adaptive') === 'adaptive'
+          {((s['review.scheduler'] as string) ?? 'studysmarter') === 'studysmarter'
+            ? 'Red, yellow and green, like StudySmarter. A new card is learnt after two greens (the first makes it light green); yellow sends it to the back of the pile and red brings it back three cards later. A learnt card comes back after 1 day, then 3, 7, 14, 30, 60… days, a step further each time you get it green. Yellow or red on a review means learning it again, and the gaps start over at 1 day.'
+            : ((s['review.scheduler'] as string) ?? 'studysmarter') === 'adaptive'
             ? 'Cards start at difficulty 0.60 with three 1-day steps, then intervals grow fast (≈3, 8, 20, 115, 280+ days). A card comes back after interval × (0.694 − 0.187 × difficulty), so harder cards return sooner.'
             : 'Classic SuperMemo-2: ease factor starts at 2.5, intervals go 1 → 6 → interval × ease. Again resets the card.'}
         </p>

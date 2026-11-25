@@ -29,6 +29,7 @@ import { switchLevel } from '../lib/courseFlows'
 import { CourseQuestionView } from '../learn/CourseQuestions'
 import { insertRetry } from '@shared/retry'
 import { GREENS_TO_PASS, RED_GAP, nextPile, type PileRating } from '@shared/cardPile'
+import { DEFAULT_SCHEDULER } from '@shared/scheduler'
 import { SUBMIT_EVENT } from '../learn/Questions'
 
 /** Chance of a surprise recall card from another topic after a section. */
@@ -785,6 +786,8 @@ function CardsStep({
   const [tries, setTries] = useState<Record<number, number>>(() => saved?.tries ?? {})
   const [greens, setGreens] = useState<Record<number, number>>(() => saved?.greens ?? {})
   const [srDone, setSrDone] = useState<Record<number, true>>(() => saved?.rated ?? {})
+  const [scheduler, setScheduler] = useState<string>(DEFAULT_SCHEDULER)
+  useEffect(() => void api.settings.all().then((st) => setScheduler((st['review.scheduler'] as string) ?? DEFAULT_SCHEDULER)), [])
   useEffect(() => onSave({ queue, tries, greens, rated: srDone }), [queue, tries, greens, srDone])
   const [flipped, setFlipped] = useState(false)
   // Seen the answer at least once: you can then rate it, and turn the card over as often as you like.
@@ -846,10 +849,16 @@ function CardsStep({
 
   const rate = (r: CardRating) => {
     if (!revealed || rated) return
-    // Only your first go at each card counts for spaced repetition; the rest is practice.
+    // With the StudySmarter scheduler the pile is its learning pipeline, so every
+    // rating counts until the card is learnt (or reviewed); with the others only
+    // your first go counts. The rest is practice.
     if (!srDone[idx]) {
-      setSrDone({ ...srDone, [idx]: true })
-      void api.courses.rateCard({ topicId, front: card.front, cardId: card.id, rating: r }).catch(() => {})
+      const i = idx
+      if (scheduler !== 'studysmarter') setSrDone((d) => ({ ...d, [i]: true }))
+      void api.courses
+        .rateCard({ topicId, front: card.front, cardId: card.id, rating: r })
+        .then((res) => res.learnt && setSrDone((d) => ({ ...d, [i]: true })))
+        .catch(() => {})
     }
     if (r === 3) return advance(r)
     setRated(r)

@@ -16,11 +16,22 @@
 //     relearning with a much shorter interval
 //
 // "sm2" is the classic SuperMemo-2 algorithm (see sm2.ts).
+//
+// "studysmarter" (the default) works the way StudySmarter's flashcards do,
+// with three colours: red (didn't know), yellow (sort of), green (knew it).
+//   - learning: a card is learnt after two greens (the first makes it light
+//     green). Yellow and red send it round again (see cardPile.ts) without
+//     undoing a green. Until it's learnt it stays due.
+//   - review: a learnt card comes back after 1 day, then 3, 7, 14, 30, 60, 120,
+//     240 days, doubling after that. One green on review counts as reviewed
+//     and moves it up a step.
+//   - a yellow or red on review starts it again: it has to be learnt again
+//     (two greens) and its next review is back to 1 day.
 
 import { review as sm2Review, type Sm2State } from './sm2'
 
-export type SchedulerKind = 'adaptive' | 'sm2'
-export const DEFAULT_SCHEDULER: SchedulerKind = 'adaptive'
+export type SchedulerKind = 'studysmarter' | 'adaptive' | 'sm2'
+export const DEFAULT_SCHEDULER: SchedulerKind = 'studysmarter'
 
 /** sr_state: -1 relearning, 0 unlearned, 1 learned, 2 mastered */
 export type SrState = -1 | 0 | 1 | 2
@@ -118,7 +129,44 @@ export function adaptiveReview(s: SchedState, rating: 1 | 2 | 3 | 4, now = new D
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000
 
+/** Days between reviews of a learnt card, one step per green on review; doubling after the last. */
+export const REVIEW_DAYS = [1, 3, 7, 14, 30, 60, 120, 240]
+
+/** The next gap after one of `days` (0 for a card that was only just learnt). */
+export function nextReviewDays(days: number): number {
+  const step = REVIEW_DAYS.find((d) => d > days)
+  return step ?? Math.max(REVIEW_DAYS[REVIEW_DAYS.length - 1], days) * 2
+}
+
+/** A learnt card (green twice while learning, and not forgotten since). */
+export const isLearnt = (s: { sr_state?: number } | null | undefined): boolean => (s?.sr_state ?? 0) >= 1
+
+/**
+ * StudySmarter-style colours. 3 or 4 is green, 2 yellow, 1 red. While learning,
+ * the card stays due (it's still in the pile); once learnt it's due after the
+ * review gap.
+ */
+export function trafficReview(s: SchedState, rating: 1 | 2 | 3 | 4, now = new Date()): SchedState {
+  const green = rating >= 3
+  const at = now.toISOString()
+  if (isLearnt(s)) {
+    if (green) {
+      const interval = nextReviewDays(s.interval)
+      return { ...s, interval, repetitions: s.repetitions + 1, sr_state: interval >= MASTERED_DAYS ? 2 : 1, due: dueAfter(now, interval), last_reviewed: at }
+    }
+    // Forgotten on review: learn it again, and the review gaps start over.
+    return { ...s, interval: 0, repetitions: 0, lapses: s.lapses + 1, sr_state: -1, good_count: 0, difficulty: round3(clamp(s.difficulty + (rating === 1 ? 0.1 : 0.05), 0, 1)), due: at, last_reviewed: at }
+  }
+  if (!green) return { ...s, due: at, last_reviewed: at }
+  const good_count = (s.good_count ?? 0) + 1
+  if (good_count < 2) return { ...s, good_count, due: at, last_reviewed: at }
+  // Learnt (green twice): the first review is a day later.
+  const interval = nextReviewDays(0)
+  return { ...s, good_count, interval, repetitions: 0, sr_state: 1, due: dueAfter(now, interval), last_reviewed: at }
+}
+
 export function schedule(kind: SchedulerKind, s: SchedState, rating: 1 | 2 | 3 | 4, now = new Date()): SchedState {
+  if (kind === 'studysmarter') return trafficReview(s, rating, now)
   if (kind === 'sm2') {
     const r = sm2Review(s, rating, now)
     const good_count = (s.good_count ?? 0) + (rating >= 3 ? 1 : 0)

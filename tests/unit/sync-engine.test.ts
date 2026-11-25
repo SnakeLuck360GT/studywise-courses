@@ -179,7 +179,8 @@ describe('sync engine', () => {
     expect(before.some((t) => t.sql.includes('julianday'))).toBe(false)
     migrate(db)
     const after = triggers()
-    expect(after.map((t) => t.name).sort()).toEqual(before.map((t) => t.name).sort())
+    // Every old trigger is still there (later migrations add tables of their own).
+    expect(after.map((t) => t.name)).toEqual(expect.arrayContaining(before.map((t) => t.name)))
     expect(after.filter((t) => t.name.endsWith('_upd') || t.name.endsWith('_del')).every((t) => t.sql.includes('julianday'))).toBe(true)
     // Still records writes.
     addDeck(db, 'd1')

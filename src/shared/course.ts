@@ -114,6 +114,12 @@ export const CourseTrimOut = z.object({
 })
 export type CourseTrimOut = z.infer<typeof CourseTrimOut>
 
+/** Questions from two copies of a week that ask the same thing: which of each pair to keep, word for word. */
+export const CourseDedupeOut = z.object({
+  same: z.array(z.object({ group: z.number().int(), a: z.number().int(), b: z.number().int(), keep: z.enum(['a', 'b']) })).default([])
+})
+export type CourseDedupeOut = z.infer<typeof CourseDedupeOut>
+
 // ---------------------------------------------------------------------------
 // What the app stores
 

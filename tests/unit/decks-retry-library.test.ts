@@ -20,6 +20,8 @@ beforeAll(async () => {
   const { seedPresets } = await import('../../src/main/ai/presets')
   seedPresets()
   repo = await import('../../src/main/db/repo')
+  // These tests check the difficulty-based scheduler's numbers (lapses, repetitions); the StudySmarter one is in traffic.test.ts.
+  repo.setSetting('review.scheduler', 'adaptive')
   svc = await import('../../src/main/services/course')
   learn = await import('../../src/main/services/learn')
   library = await import('../../src/main/library')

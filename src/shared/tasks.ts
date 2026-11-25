@@ -21,7 +21,8 @@ export const TASKS = [
   'course_mark',
   'course_trim',
   'course_update',
-  'course_extend'
+  'course_extend',
+  'course_dedupe'
 ] as const
 export type TaskId = (typeof TASKS)[number]
 
@@ -236,6 +237,15 @@ export const TASK_INFO: Record<TaskId, TaskInfo> = {
     variables: ['module', 'level', 'week', 'topics', 'files', 'source_text', 'instructions'],
     streams: false,
     long: true
+  },
+  course_dedupe: {
+    id: 'course_dedupe',
+    label: 'Course: spot repeated questions when merging weeks',
+    defaultModel: 'sonnet',
+    modes: ['json'],
+    variables: ['module', 'groups'],
+    streams: false,
+    long: false
   },
   course_extend: {
     id: 'course_extend',

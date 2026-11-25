@@ -15,6 +15,8 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'sw-learn-'))
   openDb(join(dir, 't.db'))
   seedPresets()
+  // Checks the difficulty-based scheduler's numbers (lapses); the StudySmarter one is in traffic.test.ts.
+  repo.setSetting('review.scheduler', 'adaptive')
   deckId = repo.createDeck({ name: 'Learn' }).id
   repo.createCards([
     { deck_id: deckId, front: 'What is the work function?', back: 'the **minimum energy** to remove an electron' },

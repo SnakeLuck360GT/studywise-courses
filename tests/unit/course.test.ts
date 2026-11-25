@@ -452,7 +452,8 @@ describe('cards wait until you study them', () => {
     svc.saveProgress(t.id, { ...base, section: 1, step: { kind: 'cards', section: 1 } })
     expect(new Set(svc.dueCards(c.id).map((x) => x.id))).toEqual(new Set([...bySection[0], ...bySection[1]]))
 
-    // Rate a section-2 card, then reset the topic: the rated card stays in review, the rest wait again.
+    // Learn a section-2 card (two greens), then reset the topic: it stays in review, the rest wait again.
+    repo.applyReview(bySection[1][0], 3, 'learn')
     repo.applyReview(bySection[1][0], 3, 'learn')
     svc.resetTopicProgress(t.id)
     const sleeping = repo.listCards(deck).filter((x) => !svc.dueCards(c.id).some((d) => d.id === x.id) && x.id !== bySection[1][0])
@@ -460,7 +461,7 @@ describe('cards wait until you study them', () => {
 
     // Finished: everything's in review.
     svc.saveProgress(t.id, { ...base, section: 3, done: true })
-    expect(repo.dueCountsByDeck().get(deck)).toBe(total - 1) // the rated one isn't due again yet
+    expect(repo.dueCountsByDeck().get(deck)).toBe(total - 1) // the learnt one isn't due again yet
   })
 })
 

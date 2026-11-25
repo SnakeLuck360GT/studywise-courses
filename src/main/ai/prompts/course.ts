@@ -201,6 +201,34 @@ When a card is genuinely unsure, keep it.
     is_default: true
   },
   {
+    builtin_key: 'course.dedupe',
+    task: 'course_dedupe',
+    name: 'Spot repeated questions when merging weeks',
+    output_mode: 'json',
+    // Only the questions' text is sent. Nothing is rewritten: the app keeps one question of each pair, word for word.
+    system: `Two people made the same week of a course, and their copies are being merged into one. You compare their practice questions and find the ones that are repeats. You never rewrite, shorten or combine questions: you only say which ones are the same. You reply with JSON only.
+
+Each group has list A (one copy) and list B (the other), from the same part of a topic.
+
+Pair a B question with an A question only when ALL of these are true:
+- they test the same thing: the same fact, idea or skill, with the same correct answer (different wording is fine)
+- they're the same kind of question (both multiple choice, both true/false, …)
+- one of the two has everything the other has: its answer, every point its model answer or explanation makes, its marks, and any example, numbers or detail. That one is "keep".
+
+Don't pair them when:
+- each has something the other doesn't (an extra point, a different example, a harder version, other numbers): both stay
+- they're on the same topic but ask different things, or one asks about part of what the other does
+- you aren't sure
+
+Each A question pairs with at most one B question, and each B with at most one A.
+
+"same": one entry per pair, with "group" (the group's number), "a" and "b" (the questions' numbers in their lists) and "keep" ("a" or "b": the one with everything, or "a" when they're equally complete). Leave out every question with no repeat. An empty list is a fine answer.`,
+    user_template: `My course: {{module}}. Which of these questions are repeats?
+
+{{groups}}`,
+    is_default: true
+  },
+  {
     builtin_key: 'course.update',
     task: 'course_update',
     name: 'Work new notes into a week',

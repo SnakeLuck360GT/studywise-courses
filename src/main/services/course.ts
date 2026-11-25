@@ -54,7 +54,8 @@ import {
   type Week,
   type WeekFull
 } from '@shared/course'
-import { cardKey, matchTopics, mergeLevels, mergePlan, remapContent, type MergeTopic } from '@shared/weekMerge'
+import { cardKey, matchTopics, mergeLevels, mergePlan, remapContent, withQuestionJudge, type MergeTopic, type QuestionJudge } from '@shared/weekMerge'
+import { askAboutRepeats, questionCollector } from './questionDedupe'
 
 // A course is a run of weeks. Each week has its own files; its topics are
 // planned from those files only, knowing what earlier weeks already cover.
@@ -525,7 +526,8 @@ export function deleteWeek(weekId: string): void {
  *                 again at the first new one), the rest move over
  * The other weeks are then removed. Returns what changed.
  */
-export async function mergeWeeks(targetId: string, otherIds: string[]): Promise<{ weekId: string; merged: number; added: number; cards: number; files: number }> {
+/** The weeks to merge, once it's known they can be (same course, nothing still being planned or written). */
+function mergeableWeeks(targetId: string, otherIds: string[]): { target: WeekRow; others: WeekRow[] } {
   const d = getDb()
   const target = weekRow(targetId)
   const others = [...new Set(otherIds)].filter((id) => id !== targetId).map(weekRow)
@@ -535,6 +537,50 @@ export async function mergeWeeks(targetId: string, otherIds: string[]): Promise<
     if (w.status === 'planning') throw new Error(`${w.label} is still being planned. Merge it when that's done.`)
     if (d.prepare("SELECT 1 FROM topics WHERE week_id = ? AND status = 'writing'").get(w.id)) throw new Error(`A topic in ${w.label} is still being written. Merge it when that's done.`)
   }
+  return { target, others }
+}
+
+/** A topic's title, plan and every written level, as merging compares them. */
+function mergeTopicOf(r: TopicRow): MergeTopic {
+  const contents: Record<string, TopicContent> = {}
+  const shown = json<TopicContent | null>(r.content, null)
+  if (shown) contents[rowLevel(r)] = shown
+  for (const [l, v] of Object.entries(rowVersions(r))) if (v?.content && !contents[l]) contents[l] = v.content
+  const plan = json<OutlineTopic | null>(r.plan, null)
+  return { title: shown?.title ?? plan?.title ?? r.key, plan, contents }
+}
+
+/**
+ * mergeWeeks, with the AI checking which questions from the different copies
+ * ask the same thing in other words (see questionDedupe.ts). A dry run first
+ * finds every list of questions the merge combines; nothing changes until the
+ * real merge.
+ */
+export async function mergeWeeksChecked(targetId: string, otherIds: string[], signal?: AbortSignal): Promise<Awaited<ReturnType<typeof mergeWeeks>> & { repeats: number; checked: boolean }> {
+  const { target, others } = mergeableWeeks(targetId, otherIds)
+  const load = (weekId: string) => (getDb().prepare('SELECT * FROM topics WHERE week_id = ? ORDER BY position').all(weekId) as TopicRow[]).map(mergeTopicOf)
+  const collect = questionCollector()
+  withQuestionJudge(collect.judge, () => {
+    const topics = load(target.id)
+    for (const w of others) {
+      const theirs = load(w.id)
+      const m = matchTopics(topics, theirs)
+      theirs.forEach((t, j) => {
+        const i = m.get(j)
+        if (i === undefined) topics.push(t)
+        else topics[i] = { ...topics[i], contents: mergeLevels(topics[i].contents, t.contents) }
+      })
+    }
+  })
+  const c = getCourse(target.course_id)
+  const check = await askAboutRepeats(collect.groups, { module: c.module || c.name, signal })
+  const r = await mergeWeeks(targetId, otherIds, { judge: check.judge })
+  return { ...r, repeats: check.pairs, checked: check.checked }
+}
+
+export async function mergeWeeks(targetId: string, otherIds: string[], opts: { judge?: QuestionJudge | null } = {}): Promise<{ weekId: string; merged: number; added: number; cards: number; files: number }> {
+  const d = getDb()
+  const { target, others } = mergeableWeeks(targetId, otherIds)
   const deckId = ensureWeekDeck(targetId)
   const sha = (p: string) => (existsSync(p) ? createHash('sha256').update(readFileSync(p)).digest('hex') : null)
   const allFiles = listFiles(target.course_id)
@@ -563,6 +609,8 @@ export async function mergeWeeks(targetId: string, otherIds: string[]): Promise<
     return { row: r, level, topic: { title: shown?.title ?? plan?.title ?? r.key, plan, contents } satisfies MergeTopic }
   }
 
+  // The judge (the AI check in mergeWeeksChecked) says which questions are repeats in other words.
+  withQuestionJudge(opts.judge ?? null, () => {
   for (const w of others) {
     // Files: the same bytes as one already in the target week are that file.
     const fileMap = new Map<string, string>()
@@ -681,6 +729,7 @@ export async function mergeWeeks(targetId: string, otherIds: string[]): Promise<
     }
     deleteWeek(w.id)
   }
+  })
 
   for (const id of touched) {
     refreshDormancy(id)
@@ -989,7 +1038,7 @@ function mapFigure(fig: AiTopic['sections'][number]['figure'], attached: Attache
  * Rate one of a topic's section flashcards (1 again … 4 easy), as in flashcard
  * review. Topics written before section cards carried ids are matched by front.
  */
-export function rateTopicCard(topicId: string, front: string, rating: 1 | 2 | 3 | 4, cardId?: string): { cardId: string | null } {
+export function rateTopicCard(topicId: string, front: string, rating: 1 | 2 | 3 | 4, cardId?: string): { cardId: string | null; learnt: boolean } {
   let id = cardId ?? null
   if (!id) {
     const ids = topicCardIds(getTopic(topicId).course_id, topicId)
@@ -998,8 +1047,9 @@ export function rateTopicCard(topicId: string, front: string, rating: 1 | 2 | 3 
       : undefined
     id = row?.id ?? null
   }
-  if (id) repo.applyReview(id, rating, 'learn')
-  return { cardId: id }
+  // learnt: spaced repetition counts the card as learnt (or reviewed) now, so more greens this session are practice.
+  const s = id ? repo.applyReview(id, rating, 'learn') : null
+  return { cardId: id, learnt: !!s && rating >= 3 && s.sr_state >= 1 }
 }
 
 /**

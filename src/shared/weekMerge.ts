@@ -83,15 +83,66 @@ function questionKey(q: CourseQuestion): string {
   return `${q.type}:${normText(String(r.q ?? r.text ?? r.statement ?? ''))}`
 }
 
-/** The union of two lists of questions, without repeats. */
+/**
+ * Spots questions that ask the same thing in different words (the AI check in
+ * src/main/services/questionDedupe.ts). Merging runs twice: once with `seen`,
+ * to collect every pair of lists being merged, then, after the AI has looked
+ * at them, with `same`, which says whether two questions (one from each copy)
+ * are repeats and which to keep. Questions are never changed, only kept or
+ * left out, and each question stands for at most one of the other copy's.
+ */
+export interface QuestionJudge {
+  seen?: (a: CourseQuestion[], b: CourseQuestion[]) => void
+  same?: (a: CourseQuestion, b: CourseQuestion) => 'a' | 'b' | null
+}
+let judge: QuestionJudge | null = null
+
+/** Runs `fn` (a merge) with `j` deciding which questions are repeats. */
+export function withQuestionJudge<T>(j: QuestionJudge | null, fn: () => T): T {
+  const prev = judge
+  judge = j
+  try {
+    return fn()
+  } finally {
+    judge = prev
+  }
+}
+
+/** A question's identity for the judge's answers: its type and text, ignoring case, punctuation and Markdown. */
+export const questionId = questionKey
+
+/**
+ * The union of two lists of questions, without repeats: exact ones always,
+ * and ones the judge says ask the same thing, keeping whichever has everything.
+ */
 export function mergeQuestions(a: CourseQuestion[], b: CourseQuestion[]): CourseQuestion[] {
   const out = [...a]
   const seen = new Set(a.map(questionKey))
+  const extra: CourseQuestion[] = []
   for (const q of b) {
     const k = questionKey(q)
     if (!seen.has(k)) {
       seen.add(k)
-      out.push(q)
+      extra.push(q)
+    }
+  }
+  if (a.length && extra.length) judge?.seen?.(a, extra)
+  const same = judge?.same
+  if (!same) return [...out, ...extra]
+  const used = new Set<number>()
+  for (const q of extra) {
+    let hit = -1
+    let keep: 'a' | 'b' | null = null
+    for (let i = 0; i < a.length && hit < 0; i++) {
+      if (used.has(i)) continue
+      keep = same(a[i], q)
+      if (keep) hit = i
+    }
+    if (hit < 0) out.push(q)
+    else {
+      used.add(hit)
+      // The fuller of the two, word for word, in the first copy's place.
+      if (keep === 'b') out[hit] = q
     }
   }
   return out

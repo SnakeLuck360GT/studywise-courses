@@ -135,12 +135,18 @@ export async function switchLevel(topic: Topic, level: NoteLevel): Promise<Topic
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 const writtenIn = (w: WeekFull) => w.topics.filter((t) => t.status === 'ready').length
 const WHAT_MERGES =
-  'Every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, its files and its recall cards go into one week. Only repeats are taken out: nothing is shortened or summarised, and nothing is generated. Your progress and card reviews are kept.'
+  'Every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, its files and its recall cards go into one week. Only repeats are taken out: Claude checks which questions ask the same thing in other words, and the fuller one of each pair is kept word for word. Nothing is shortened, rewritten or generated. Your progress and card reviews are kept.'
 
 async function runMerge(target: WeekFull, others: WeekFull[]): Promise<boolean> {
   try {
+    if (!useStore.getState().offline) toast('Merging, and checking for questions that ask the same thing…', 'info')
     const r = await api.courses.mergeWeeks({ weekId: target.id, otherIds: others.map((o) => o.id) })
-    const parts = [r.merged && `${plural(r.merged, 'topic')} combined`, r.added && `${plural(r.added, 'topic')} added`, r.cards && `${plural(r.cards, 'recall card')} moved over`].filter(Boolean)
+    const parts = [
+      r.merged && `${plural(r.merged, 'topic')} combined`,
+      r.added && `${plural(r.added, 'topic')} added`,
+      r.cards && `${plural(r.cards, 'recall card')} moved over`,
+      r.repeats && `${plural(r.repeats, 'repeated question')} kept once`
+    ].filter(Boolean)
     toast(`Merged into ${target.label}${parts.length ? `: ${parts.join(', ')}` : ''}.`, 'good')
     useStore.getState().bump()
     return true

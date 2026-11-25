@@ -423,9 +423,10 @@ export const handlers = {
     }),
     renameWeek: h(z.object({ weekId: id, label: z.string().min(1).max(100) }), (i) => course.renameWeek(i.weekId, i.label)),
     deleteWeek: h(z.object({ weekId: id }), (i) => course.deleteWeek(i.weekId)),
-    /** Merge duplicate weeks of a course into one (nothing generated, nothing dropped); the others are removed. */
+    /** Merge duplicate weeks of a course into one (nothing generated or cut; the AI only spots repeated questions); the others are removed. */
     mergeWeeks: h(z.object({ weekId: id, otherIds: z.array(id).min(1).max(30) }), async (i) => {
-      const r = await course.mergeWeeks(i.weekId, i.otherIds)
+      // The AI checks for questions that ask the same thing; without AI it merges as before.
+      const r = await course.mergeWeeksChecked(i.weekId, i.otherIds)
       market.recordWeeksMerged(i.weekId, i.otherIds)
       return r
     }),

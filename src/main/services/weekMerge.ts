@@ -10,7 +10,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import JSZip from 'jszip'
 import type { WeekFingerprint } from '@shared/fingerprint'
-import { cardKey, matchTopics, mergeLevels, mergePlan, remapContent, type MergeTopic } from '@shared/weekMerge'
+import { cardKey, matchTopics, mergeLevels, mergePlan, remapContent, withQuestionJudge, type MergeTopic, type QuestionJudge } from '@shared/weekMerge'
 import type { OutlineTopic, TopicContent } from '@shared/course'
 import type { WeekJson } from './weekShare'
 
@@ -78,7 +78,7 @@ function mergeFingerprints(fps: (WeekFingerprint | undefined)[]): WeekFingerprin
  * Merges copies of one week into one .studyweek. Order doesn't matter: the
  * copy with the most written topics becomes the base.
  */
-export async function mergeWeekZips(bufs: Buffer[]): Promise<{ bytes: Buffer; json: WeekJson }> {
+export async function mergeWeekZips(bufs: Buffer[], opts: { judge?: QuestionJudge | null; dryRun?: boolean } = {}): Promise<{ bytes: Buffer; json: WeekJson }> {
   if (bufs.length < 2) throw new Error('Pick at least two copies to merge.')
   const written = (s: Source) => s.json.topics.filter((t) => t.status === 'ready').length
   const sources = (await Promise.all(bufs.map(loadWeekZip))).sort((a, b) => written(b) - written(a) || b.json.topics.length - a.json.topics.length)
@@ -103,6 +103,8 @@ export async function mergeWeekZips(bufs: Buffer[]): Promise<{ bytes: Buffer; js
   // The week number topic keys use (w3t1): the base copy's.
   const weekNo = Number(String(base.topics[0]?.key ?? '').match(/^w(\d+)t/)?.[1] ?? Number(base.week.position ?? 0) + 1)
 
+  // The judge (an AI check, see questionDedupe.ts) says which questions are repeats in other words.
+  withQuestionJudge(opts.judge ?? null, () => {
   for (const src of sources) {
     // Files: the same bytes are the same file, whatever it's called.
     const fileId = new Map<string, string>()
@@ -191,6 +193,7 @@ export async function mergeWeekZips(bufs: Buffer[]): Promise<{ bytes: Buffer; js
       if (source?.ref && topicId.has(source.ref)) c.source = JSON.stringify({ ...source, ref: topicId.get(source.ref) })
     }
   }
+  })
 
   const now = new Date().toISOString()
   const topicRows: Row[] = topics.map((t, i) => {
@@ -227,6 +230,7 @@ export async function mergeWeekZips(bufs: Buffer[]): Promise<{ bytes: Buffer; js
     cards,
     fingerprint: mergeFingerprints(sources.map((s) => s.json.fingerprint))
   }
+  if (opts.dryRun) return { bytes: Buffer.alloc(0), json }
   const zip = new JSZip()
   zip.file('week.json', JSON.stringify(json), { compression: 'DEFLATE' })
   // As in weekZip: a file row's path is relative to its course folder (files/…), and the zip keeps it under files/.

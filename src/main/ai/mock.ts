@@ -268,6 +268,25 @@ export function mockResponse(task: TaskId, mode: string, vars: Record<string, un
       const out = { remove }
       return { text: JSON.stringify(out), structured: out }
     }
+    case 'course_dedupe': {
+      // Pairs questions that use the same words in any order, keeping the longer, like the real thing would for a reworded repeat.
+      const same: { group: number; a: number; b: number; keep: 'a' | 'b' }[] = []
+      for (const block of v('groups').split(/^### Group /m).slice(1)) {
+        const group = Number(block.match(/^(\d+)/)?.[1])
+        const side = (tag: string) => [...block.matchAll(new RegExp(`^${tag}(\\d+)\\. (.*)$`, 'gm'))].map((m) => ({ n: Number(m[1]), text: m[2] }))
+        const key = (t: string) => (JSON.parse(t).q ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, '').split(' ').filter(Boolean).sort().join(' ')
+        const used = new Set<number>()
+        for (const b of side('B')) {
+          const a = side('A').find((x) => !used.has(x.n) && key(x.text) === key(b.text))
+          if (a) {
+            used.add(a.n)
+            same.push({ group, a: a.n, b: b.n, keep: b.text.length > a.text.length ? 'b' : 'a' })
+          }
+        }
+      }
+      const out = { same }
+      return { text: JSON.stringify(out), structured: out }
+    }
     case 'course_update': {
       const ids = [...v('topics').matchAll(/"id": "([^"]+)"/g)].map((m) => m[1])
       const file = v('files').split(',')[0]?.replace(/\s*\(\d+ pages\)\s*$/, '').trim() || 'notes.txt'
