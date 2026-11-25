@@ -265,7 +265,35 @@ export function mockResponse(task: TaskId, mode: string, vars: Record<string, un
       // Suggests the cards that test an example or a company, like the real thing would.
       const lines = v('cards').split('\n').filter((l) => /^\d+\./.test(l))
       const remove = lines.filter((l) => /example|compan|imagine/i.test(l)).map((l) => ({ n: Number(l.match(/^(\d+)\./)![1]), reason: 'an example, not examinable' }))
+      // Cutting down: every other remaining card goes too.
+      if (/CUT DOWN TO KEY CONTENT/.test(v('instructions')) || /CUT DOWN TO KEY CONTENT/.test(prompt)) {
+        const gone = new Set(remove.map((r) => r.n))
+        lines
+          .map((l) => Number(l.match(/^(\d+)\./)![1]))
+          .filter((n) => !gone.has(n))
+          .forEach((n, i) => i % 2 === 1 && remove.push({ n, reason: 'minor detail' }))
+      }
       const out = { remove }
+      return { text: JSON.stringify(out), structured: out }
+    }
+    case 'course_week_test': {
+      const topics = v('topics')
+        .split('\n')
+        .map((l) => l.match(/^-\s*([^:(]+)/)?.[1]?.trim())
+        .filter((t): t is string => !!t)
+      const n = Math.max(1, Math.min(25, Number(v('count')) || 10))
+      const hard = /^Hard/.test(v('difficulty'))
+      const out = {
+        questions: Array.from({ length: n }, (_, i) => ({
+          type: 'mcq',
+          q: `${hard ? 'A metal is lit with light just above its threshold frequency. ' : ''}Question ${i + 1}: what frees an electron from a metal?`,
+          options: ['One photon with enough energy', 'Lots of dim photons together', 'Heating the metal slowly', 'A stronger magnetic field'],
+          answer: 0,
+          hint: 'Think about one photon and one electron.',
+          why: 'One photon gives all its energy to one electron, so only the photon’s energy matters.',
+          topic: topics[i % Math.max(1, topics.length)] ?? ''
+        }))
+      }
       return { text: JSON.stringify(out), structured: out }
     }
     case 'course_update': {

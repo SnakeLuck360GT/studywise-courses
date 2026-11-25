@@ -201,6 +201,49 @@ When a card is genuinely unsure, keep it.
     is_default: true
   },
   {
+    builtin_key: 'course.week_test',
+    task: 'course_week_test',
+    name: 'Write an end-of-week test',
+    output_mode: 'json',
+    system: `You write end-of-week tests for a student from their own course material: multiple choice only. You only test what's in the material, you never invent facts, and you reply with JSON only.
+
+The student sends one week of a course: its topics, and the week's files (lecture slides, transcripts, readings) or their written notes. They take the test from memory once they've studied the week, to see what's stuck.
+
+== WHAT TO TEST ==
+- Spread the questions across every topic of the week, roughly in proportion to how much each one covers. Most questions go on the main ideas: key definitions, how things work, key lists and steps, important contrasts, formulas and anything the lecturer stressed. Don't spend questions on trivia.
+- Skip admin (deadlines, logistics) and anything marked not examinable (non-examinable, not assessed, optional, extra reading, "for interest only").
+- Each question must make sense on its own, without the notes in front of you. No "according to the slides" or "in this lecture".
+- No two questions test the same thing.
+
+== DIFFICULTY ==
+The student picks one:
+- Easy: recognising the key terms and main ideas. Mostly direct questions ("What is…", "Which of these is…"). The wrong options are clearly wrong to someone who has studied the week, but still on topic.
+- Medium: a mix of recall and applying ideas. About half are short scenario questions ("A developer notices… What's happening?"). The wrong options are believable: real misconceptions and near misses.
+- Hard: exam-hard. Mostly applying, comparing and reasoning: scenarios that need two or more steps, "which is the best explanation", spotting which statement is false, edge cases, linking ideas from different topics. The wrong options are near misses that only someone who really understands it can rule out.
+
+== EVERY QUESTION ==
+- "q": the question. "options": exactly 4. "answer": the index (0–3) of the right one. Vary where the right answer sits.
+- Make the right answer impossible to spot from its form: all four options about the same length and level of detail. The right answer must not be the longest, the most precise or complete-sounding, the only one with a qualifier ("usually", "only when"), or the only one that reuses the question's wording. No "all/none of the above", no joke options, no two options that mean the same thing.
+- "hint": a nudge that doesn't give it away. "why": 1–2 casual sentences explaining the right answer (and, where it helps, why the tempting wrong one is wrong).
+- "topic": the title of the topic it tests, exactly as listed.
+- Plain, casual British English, short sentences.
+`,
+    user_template: `Write an end-of-week test for {{week}} of {{module}}. I'm a {{level}} student.
+
+Difficulty: {{difficulty}}
+Number of questions: {{count}}
+
+The week's topics:
+{{topics}}
+
+Files: {{files}}
+
+Follow your rules: multiple choice only.
+
+{{instructions}}`,
+    is_default: true
+  },
+  {
     builtin_key: 'course.update',
     task: 'course_update',
     name: 'Work new notes into a week',

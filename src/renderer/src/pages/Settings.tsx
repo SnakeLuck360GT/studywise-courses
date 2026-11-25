@@ -35,6 +35,7 @@ import {
 import type { UpdateStatus } from '@shared/update'
 import type { Preset, PresetVersion, CustomAction, ModelChoice, AiCall, Thresholds, AiProvider, OllamaModel } from '@shared/types'
 import { ACTION_PLACEMENTS, DEFAULT_THRESHOLDS } from '@shared/types'
+import { QUESTION_AMOUNTS, QUESTION_AMOUNT_INFO, isQuestionAmount, type QuestionAmount } from '@shared/course'
 import { TASK_INFO, TASKS, MODEL_ALIASES, EFFORT_LEVELS, OLLAMA_EFFORT_LEVELS, type TaskId } from '@shared/tasks'
 import { useStore, toast } from '../lib/store'
 import { Jobs } from './Jobs'
@@ -155,6 +156,7 @@ function General() {
     await api.settings.set({ key, value })
   }
   const th = (s.thresholds as Thresholds) ?? DEFAULT_THRESHOLDS
+  const questions: QuestionAmount = isQuestionAmount(s['course.questions']) ? s['course.questions'] : 'usual'
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <OfflineCard />
@@ -192,6 +194,12 @@ function General() {
             <Input type="number" min={120} max={7200} value={Number(s['ai.longTimeoutSec'] ?? 900)} onChange={(e) => set('ai.longTimeoutSec', Math.max(120, Number(e.target.value) || 900))} />
           </Field>
         </div>
+      </Card>
+      <Card className="desktop-only flex flex-col gap-4">
+        <h3 className="text-lg font-semibold">Courses</h3>
+        <Field label="Questions while learning a topic" hint={`${QUESTION_AMOUNT_INFO[questions].about} Quick revision and the other depths scale from their own usual amount. Applies to topics written (or written again) from now on.`}>
+          <Segmented<QuestionAmount> value={questions} onChange={(v) => set('course.questions', v)} options={QUESTION_AMOUNTS.map((a) => ({ value: a, label: QUESTION_AMOUNT_INFO[a].label }))} />
+        </Field>
       </Card>
       <Card className="flex flex-col gap-4">
         <h3 className="text-lg font-semibold">Spaced repetition</h3>

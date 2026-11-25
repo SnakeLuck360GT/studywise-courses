@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { MIGRATIONS, migrate } from '../../src/main/db/migrations'
 import { applyChanges, changesSince, deviceId, ensureBackfill, syncWith, type SqlDb } from '../../src/main/sync/engine'
+import { SYNC_TABLES } from '../../src/shared/syncTables'
 
 const T = '2026-01-01T00:00:00.000Z'
 
@@ -179,7 +180,9 @@ describe('sync engine', () => {
     expect(before.some((t) => t.sql.includes('julianday'))).toBe(false)
     migrate(db)
     const after = triggers()
-    expect(after.map((t) => t.name).sort()).toEqual(before.map((t) => t.name).sort())
+    // Tables added after migration 10 (synced_settings) bring their own new triggers.
+    const later = SYNC_TABLES.filter((t) => (t.since ?? 0) > 10).map((t) => `sync_${t.name}_`)
+    expect(after.map((t) => t.name).filter((n) => !later.some((p) => n.startsWith(p))).sort()).toEqual(before.map((t) => t.name).sort())
     expect(after.filter((t) => t.name.endsWith('_upd') || t.name.endsWith('_del')).every((t) => t.sql.includes('julianday'))).toBe(true)
     // Still records writes.
     addDeck(db, 'd1')

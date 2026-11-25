@@ -99,12 +99,25 @@ export async function exportWeek(weekId: string, file: string): Promise<WeekPrev
   return previewOf(json)
 }
 
+/** An end-of-week test without your scores on it (JSON text in, JSON text or null out). */
+function testWithoutScores(test: unknown): string | null {
+  if (typeof test !== 'string' || !test) return null
+  try {
+    const t = JSON.parse(test) as { questions?: unknown[] }
+    return Array.isArray(t.questions) && t.questions.length ? JSON.stringify({ ...t, last: null, best: null }) : null
+  } catch {
+    return null
+  }
+}
+
 /** The .studyweek file's bytes (and what's in it). */
 /** What goes in a shared or published week: its rows without your progress, and where its files are. */
 function weekRows(weekId: string) {
   const d = getDb()
-  const week = d.prepare('SELECT * FROM weeks WHERE id = ?').get(weekId) as Row | undefined
-  if (!week) throw new Error('Week not found')
+  const row = d.prepare('SELECT * FROM weeks WHERE id = ?').get(weekId) as Row | undefined
+  if (!row) throw new Error('Week not found')
+  // Its end-of-week test goes, without your scores (so taking it doesn't count as a change to publish).
+  const week: Row = { ...row, test: testWithoutScores(row.test) }
   const course = d.prepare('SELECT * FROM courses WHERE id = ?').get(week.course_id) as Row
   const courseDir = join(paths.courses, String(course.id))
   const files = (d.prepare('SELECT * FROM course_files WHERE week_id = ? ORDER BY position').all(weekId) as Row[]).map((f): Row & { path: string } => ({ ...f, path: zipPath(relative(courseDir, String(f.path))) }))
@@ -264,6 +277,9 @@ export async function importWeek(
     week = { id: String(into.id), position: Number(into.position) }
     // An empty week takes the shared week's state; one with its own topics keeps its own.
     if (into.status === 'empty' && json.week.status === 'ready') d.prepare("UPDATE weeks SET status = 'ready', error = NULL, outline = COALESCE(outline, ?) WHERE id = ?").run(json.week.outline ?? null, week.id)
+    // Its end-of-week test comes too, unless the week has its own.
+    const test = testWithoutScores(json.week.test)
+    if (test) d.prepare('UPDATE weeks SET test = COALESCE(test, ?) WHERE id = ?').run(test, week.id)
   } else {
     // The week lands at the end of your course, under its own label (numbered if you already have one by that name).
     const labels = new Set(course.weeks.map((w) => w.label.toLowerCase()))
@@ -278,6 +294,8 @@ export async function importWeek(
       typeof json.week.planned_with === 'string' ? json.week.planned_with : null,
       week.id
     )
+    const test = testWithoutScores(json.week.test)
+    if (test) d.prepare('UPDATE weeks SET test = ? WHERE id = ?').run(test, week.id)
   }
 
   // It holds someone else's work now, so it's never published for you automatically.

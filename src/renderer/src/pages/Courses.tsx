@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { GraduationCap, Plus, FileText, X, Upload, Download, Store } from 'lucide-react'
 import { importSharedWeek } from '../lib/weekShare'
 import { IS_MOBILE } from '../lib/platform'
-import type { CourseSummary } from '@shared/course'
+import type { CourseFocus, CourseSummary } from '@shared/course'
+import { CourseFocusPicker } from '../components/CourseFocus'
 import { useStore, toast } from '../lib/store'
 import { api, errorText } from '../lib/api'
 import { offerPlan } from '../lib/courseFlows'
@@ -119,6 +120,7 @@ export function NewCourseModal() {
   const [weekLabel, setWeekLabel] = useState('Week 1')
   const [list, setList] = useState<string[]>([])
   const [note, setNote] = useState('')
+  const [focus, setFocus] = useState<CourseFocus[]>([])
   const [visibility, setVisibility] = useState<Visibility>('public')
   const [busy, setBusy] = useState(false)
 
@@ -128,6 +130,7 @@ export function NewCourseModal() {
     setName('')
     setWeekLabel('Week 1')
     setNote('')
+    setFocus([])
     setVisibility('public')
     void api.settings.all().then((s) => setLevel(String(s['profile.level'] ?? '')))
   }, [files])
@@ -138,7 +141,7 @@ export function NewCourseModal() {
     if (!name.trim()) return
     setBusy(true)
     try {
-      const c = await api.courses.create({ name: name.trim(), level: level.trim(), weekLabel: weekLabel.trim(), files: list, note, private: visibility === 'private' })
+      const c = await api.courses.create({ name: name.trim(), level: level.trim(), weekLabel: weekLabel.trim(), files: list, note, focus, private: visibility === 'private' })
       close()
       useStore.getState().bump()
       go({ name: 'course', id: c.id })
@@ -186,6 +189,7 @@ export function NewCourseModal() {
             <FileDrop list={list} setList={setList} />
           </div>
         </div>
+        <CourseFocusPicker value={focus} onChange={setFocus} />
         <VisibilityField what="course" value={visibility} onChange={setVisibility} />
         <Field label="Note for the AI (optional)" hint="Added to every prompt for this course. You can change it later from the course page.">
           <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. This course is coding heavy and in C, so tailor notes to learning the theory and the coding together." />
