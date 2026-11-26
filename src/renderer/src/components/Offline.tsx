@@ -1,10 +1,11 @@
-import { WifiOff } from 'lucide-react'
+import { Wifi, WifiOff } from 'lucide-react'
 import { useStore } from '../lib/store'
 import { cx } from './ui'
 
 /**
  * Offline mode in the top bar. On, it's a pill that says so (tap to turn it
- * off); off, a quiet icon to turn it on. The phone only shows it while on.
+ * off); off, a green wifi icon (AI is on) that turns it on. The phone only
+ * shows it while on.
  */
 export function OfflineButton({ mobile = false }: { mobile?: boolean }) {
   const offline = useStore((s) => s.offline)
@@ -26,11 +27,11 @@ export function OfflineButton({ mobile = false }: { mobile?: boolean }) {
   return (
     <button
       onClick={() => setOffline(true)}
-      title="Offline mode: study without AI (only questions marked without it)"
-      aria-label="Turn on offline mode"
-      className="no-drag hidden size-8 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-ink sm:grid"
+      title="Online: AI is on. Click for offline mode (study without AI, only questions marked without it)."
+      aria-label="Online. Turn on offline mode"
+      className="no-drag hidden size-8 shrink-0 place-items-center rounded-lg text-good transition-colors hover:bg-good-soft sm:grid"
     >
-      <WifiOff className="size-4" />
+      <Wifi className="size-4" />
     </button>
   )
 }
