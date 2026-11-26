@@ -12,8 +12,8 @@ import { OfflineButton } from './Offline'
 
 const LINKS: { label: string; route: Route; match: Route['name'][]; key: string }[] = [
   { label: 'Home', route: { name: 'home' }, match: ['home'], key: '⌘1' },
-  { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic', 'weektest'], key: 'g c' },
-  { label: 'Marketplace', route: { name: 'market' }, match: ['market'], key: 'g k' },
+  // The marketplace opens from the Courses page (or g k), so Courses stays lit while you're in it.
+  { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic', 'weektest', 'market'], key: 'g c' },
   { label: 'Decks', route: { name: 'decks' }, match: ['decks', 'deck', 'flashcards', 'learn'], key: '⌘2' },
   { label: 'Notes', route: { name: 'notes' }, match: ['notes'], key: '⌘3' },
   { label: 'Settings', route: { name: 'settings' }, match: ['settings'], key: '⌘,' }
