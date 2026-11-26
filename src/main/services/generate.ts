@@ -1,8 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename, extname } from 'node:path'
 import { z } from 'zod'
 import { runAI } from '../ai'
+import { removeWorkDir } from '../ai/cli'
 import { defaultPreset, getPreset, getPresetByKey } from '../ai/presets'
 import { prepareSources, pdfPageCount, extractText, type SourceChunk } from '../files'
 import type { JobContext } from '../jobs'
@@ -194,7 +195,7 @@ export async function generateNotes(input: GenerateNotesInput, ctx: JobContext):
     else if (ctx.signal.aborted) repo.deleteNote(note.id)
     throw e
   } finally {
-    rmSync(work, { recursive: true, force: true })
+    removeWorkDir(work)
   }
 }
 
@@ -338,7 +339,7 @@ export async function generateCards(input: GenerateCardsInput, ctx: JobContext):
     ctx.progress(`${all.length} cards ready`)
     return { cards: all, warnings: validateCards(all), presetName: preset.name, outputMode: preset.output_mode, rounds }
   } finally {
-    rmSync(work, { recursive: true, force: true })
+    removeWorkDir(work)
   }
 }
 

@@ -149,7 +149,12 @@ export function cancelJob(id: string): void {
   if (!j || j.status !== 'running') return
   j.status = 'cancelled'
   j.progress = 'Cancelled'
-  j.controller.abort()
+  try {
+    j.controller.abort()
+  } catch (e) {
+    // Something tidying up after the cancel failed: the job is cancelled all the same.
+    console.error('[jobs] cancelling', j.title, e)
+  }
   emit({ type: 'update', job: publicInfo(j) })
 }
 

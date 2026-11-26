@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, copyFileSync, rmSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { childEnv, getClaudeStatus, getResolvedPath, spawnTarget } from './claudePath'
@@ -71,6 +72,23 @@ export function makeWorkDir(): string {
   return mkdtempSync(join(tmpdir(), 'studywise-ai-'))
 }
 
+/**
+ * Removes a call's temporary folder. On Windows a folder can't be deleted
+ * while a process is still running in it, which happens when a call is
+ * cancelled or times out (claude is still stopping): then it's removed once
+ * claude has exited, quietly. A temporary folder left behind never matters
+ * enough to fail anything.
+ */
+export function removeWorkDir(dir: string, child?: { exitCode: number | null; signalCode: NodeJS.Signals | null; once(ev: 'exit', fn: () => void): unknown }): void {
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {
+    const later = () => void rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }).catch(() => {})
+    if (child && child.exitCode === null && child.signalCode === null) child.once('exit', later)
+    else setTimeout(later, 500)
+  }
+}
+
 /** Build the argument list. Exported for tests. */
 export function buildArgs(req: CliRequest): string[] {
   // Always stream-json: it carries rate_limit_event lines (plan usage) as well
@@ -127,7 +145,7 @@ export function runClaude(req: CliRequest): Promise<CliResult> {
       settled = true
       clearTimeout(timer)
       req.signal?.removeEventListener('abort', onAbort)
-      if (ownsDir) rmSync(workDir, { recursive: true, force: true })
+      if (ownsDir) removeWorkDir(workDir, child)
       fn()
     }
     const kill = () => {
