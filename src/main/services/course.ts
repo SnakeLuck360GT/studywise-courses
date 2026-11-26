@@ -82,7 +82,7 @@ import {
 } from '@shared/weekMerge'
 import { sameCourse } from '@shared/market'
 import { weekNumber } from '@shared/course'
-import { planMerge } from './contentCombine'
+import { assertCanMerge, planMerge } from './contentCombine'
 
 // A course is a run of weeks. Each week has its own files; its topics are
 // planned from those files only, knowing what earlier weeks already cover.
@@ -989,6 +989,8 @@ export async function mergeCourses(
     if (d.prepare("SELECT 1 FROM weeks WHERE course_id = ? AND status = 'planning'").get(c.id)) throw new Error(`A week of ${c.name} is still being planned. Merge when that's done.`)
     if (d.prepare("SELECT 1 FROM topics WHERE course_id = ? AND status = 'writing'").get(c.id)) throw new Error(`A topic in ${c.name} is still being written. Merge when that's done.`)
   }
+  // Merging needs Claude: not in offline mode.
+  assertCanMerge()
   const mergedWeeks: [string, string][] = []
   let moved = 0
   for (const other of others) {
@@ -996,8 +998,14 @@ export async function mergeCourses(
       const match = (d.prepare('SELECT * FROM weeks WHERE course_id = ? ORDER BY position').all(targetId) as WeekRow[]).find((w) => weekKey(w.label) === weekKey(ow.label))
       moveWeekToCourse(ow.id, targetId)
       if (match) {
-        // With the AI combining the copies' notes and spotting reworded questions (without AI, as before).
-        await mergeWeeksChecked(match.id, [ow.id], undefined, (stage) => onProgress?.(`${ow.label}: ${stage}`))
+        // With Claude combining the copies' notes and spotting reworded questions.
+        try {
+          await mergeWeeksChecked(match.id, [ow.id], undefined, (stage) => onProgress?.(`${ow.label}: ${stage}`))
+        } catch (e) {
+          // Claude couldn't be reached (nothing of this week was merged): it goes back to its own course, and the rest waits for another go.
+          moveWeekToCourse(ow.id, other.id)
+          throw e
+        }
         mergedWeeks.push([match.id, ow.id])
       } else {
         moved++

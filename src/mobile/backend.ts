@@ -187,6 +187,10 @@ const AI_CHANNELS = new Set([
   'courses.write',
   'courses.mark',
   'courses.suggestTrim',
+  // Merging needs Claude to combine the copies.
+  'courses.mergeWeeks',
+  'courses.mergeCourses',
+  'market.merge',
   'learn.feedback',
   'explain.run',
   'explain.chat',

@@ -159,11 +159,28 @@ export async function switchLevel(topic: Topic, level: NoteLevel): Promise<Topic
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
 const writtenIn = (w: WeekFull) => w.topics.filter((t) => t.status === 'ready').length
 const WHAT_MERGES =
-  'Every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, its files and its recall cards go into one week. Where both copies cover the same thing, Claude combines their notes into one section: every detail, example and explanation from both is kept, and only points that are repeated or reworded are taken out, so nothing is shortened or summarised. Questions that ask the same thing in other words are kept once (the fuller one, word for word); every other question stays. Your progress and card reviews are kept. Offline, it merges without Claude: everything is kept, only exact repeats are taken out.'
+  'Every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, its files and its recall cards go into one week. Where both copies cover the same thing, Claude combines their notes into one section: every detail, example and explanation from both is kept, and only points that are repeated or reworded are taken out, so nothing is shortened or summarised. Questions that ask the same thing in other words are kept once (the fuller one, word for word); every other question stays. Your progress and card reviews are kept. Merging needs a connection, since Claude does the combining.'
+
+/**
+ * Merging needs Claude to combine the copies, so it can't be done in offline
+ * mode. Offline, this says so and offers to turn offline mode off; true when
+ * merging can go ahead.
+ */
+export async function canMergeNow(): Promise<boolean> {
+  if (!useStore.getState().offline) return true
+  const on = await confirmDialog(
+    'Merging needs a connection',
+    'Claude combines the copies when they’re merged: it puts their notes together keeping every detail, and takes out only what’s repeated, so merging can’t be done in offline mode. Turn off offline mode to merge now (you need to be online, with Claude set up), or merge later.',
+    { confirmText: 'Turn off offline mode' }
+  )
+  if (!on) return false
+  useStore.getState().setOffline(false)
+  return true
+}
 
 async function runMerge(target: WeekFull, others: WeekFull[]): Promise<boolean> {
   try {
-    if (!useStore.getState().offline) toast('Merging: Claude is combining the notes and checking the questions. This can take a few minutes.', 'info')
+    toast('Merging: Claude is combining the notes and checking the questions. This can take a few minutes.', 'info')
     const r = await api.courses.mergeWeeks({ weekId: target.id, otherIds: others.map((o) => o.id) })
     const parts = [
       r.merged && `${plural(r.merged, 'topic')} combined`,
@@ -183,6 +200,7 @@ async function runMerge(target: WeekFull, others: WeekFull[]): Promise<boolean> 
 
 /** Merge copies of the same week in a course into one: the copy with the most written. True when merged. */
 export async function mergeDuplicateWeeks(weeks: WeekFull[], title: string): Promise<boolean> {
+  if (!(await canMergeNow())) return false
   const target = [...weeks].sort((a, b) => writtenIn(b) - writtenIn(a) || a.position - b.position)[0]
   const others = weeks.filter((w) => w.id !== target.id)
   const ok = await confirmDialog(
@@ -200,6 +218,7 @@ export async function mergeWeekWith(course: CourseFull, week: WeekFull): Promise
     toast('This course has no other week to merge in.', 'info')
     return false
   }
+  if (!(await canMergeNow())) return false
   // Its duplicate, if it has one, comes picked.
   const dup = duplicateWeekGroups(course.weeks).find((g) => g.weeks.some((w) => w.id === week.id))
   const choice = await chooseDialog(

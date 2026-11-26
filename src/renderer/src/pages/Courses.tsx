@@ -7,7 +7,7 @@ import type { CourseFocus, CourseSummary } from '@shared/course'
 import { CourseFocusPicker } from '../components/CourseFocus'
 import { useStore, toast } from '../lib/store'
 import { api, errorText } from '../lib/api'
-import { offerPlan } from '../lib/courseFlows'
+import { canMergeNow, offerPlan } from '../lib/courseFlows'
 import { offerMarketWeek } from '../lib/market'
 import { Shell, PageTitle } from '../components/Shell'
 import { PrivatePill, VisibilityField, type Visibility } from '../components/Visibility'
@@ -25,6 +25,7 @@ function DuplicateCourses() {
   if (!groups.length) return null
   const extra = groups.reduce((n, g) => n + g.courseIds.length - 1, 0)
   const merge = async () => {
+    if (!(await canMergeNow())) return
     const ok = await confirmDialog(
       groups.length === 1 ? `Merge the copies of ${groups[0].name}?` : `Merge the copies of these ${groups.length} courses?`,
       'These courses are here more than once, usually because two devices each had them (one downloaded them from the marketplace, say) before they were synced together. Each becomes one course again: every week, topic, depth, question and flashcard from every copy is kept. Where copies differ, Claude combines their notes, keeping every detail and taking out only what is repeated or reworded, and questions asked twice in other words are kept once. You keep whichever copy you got further in, with your card reviews. This can take a few minutes. The extra copies are removed, on your other synced devices too.',

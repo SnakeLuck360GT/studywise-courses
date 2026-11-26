@@ -22,6 +22,7 @@ import * as course from './services/course'
 import * as noteOrder from './services/noteOrder'
 import * as weekShare from './services/weekShare'
 import * as market from './services/market'
+import { assertCanMerge } from './services/contentCombine'
 import { CARD_CUTS, COURSE_FOCUSES, CourseQuestion, NOTE_LEVELS, WEEK_TEST_LEVELS } from '@shared/course'
 import * as io from './importexport'
 import { backupLibrary, restoreLibrary } from './backup'
@@ -631,7 +632,11 @@ export const handlers = {
     report: h(z.object({ id, reason: z.enum(['wrong', 'copyright', 'spam', 'offensive', 'other']), note: z.string().max(1000).default('') }), (i) => market.report(i.id, i.reason, i.note)),
     announcement: h(none, () => market.announcement()),
     /** Merge several people's copies of the same week into one for everyone (a job: it downloads each copy). */
-    merge: h(z.object({ ids: z.array(id).min(2).max(30), label: z.string().max(200) }), (i) => startJob('other', `Merge ${i.label}`, (ctx) => market.mergeRemote(i.ids, ctx))),
+    merge: h(z.object({ ids: z.array(id).min(2).max(30), label: z.string().max(200) }), (i) => {
+      // Merging needs Claude to combine the versions: not in offline mode.
+      assertCanMerge()
+      return startJob('other', `Merge ${i.label}`, (ctx) => market.mergeRemote(i.ids, ctx))
+    }),
     /** Download a published week; returns a .studyweek file to preview and import. */
     download: h(z.object({ id }), async (i) => {
       const file = await market.download(i.id)

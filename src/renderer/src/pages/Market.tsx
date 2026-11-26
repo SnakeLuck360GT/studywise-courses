@@ -5,6 +5,7 @@ import { NOTE_LEVELS, NOTE_LEVEL_INFO, isNoteLevel } from '@shared/course'
 import { api, errorText } from '../lib/api'
 import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, levelCounts, marketCopies, modelsText, publishAllToMarket, weekSummary } from '../lib/market'
 import { askText, chooseDialog, confirmDialog } from '../lib/dialogs'
+import { canMergeNow } from '../lib/courseFlows'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
 import { MarketSetup } from '../components/MarketSetup'
@@ -214,6 +215,7 @@ function WeekGroupRow({ g, copies, onAdded, onRemoved }: { g: WeekGroup<MarketWe
   const downloads = g.versions.reduce((n, v) => n + v.downloads, 0)
   const authors = [...new Set(g.versions.flatMap((v) => v.authors ?? [v.author]))]
   const merge = async () => {
+    if (!(await canMergeNow())) return
     const ok = await confirmDialog(
       `Merge the ${g.versions.length} versions of ${g.title} into one?`,
       `Everything from each version goes into one week: every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, and every file. Where versions cover the same thing, Claude combines their notes: every detail, example and explanation is kept and only repeated or reworded points are taken out, so nothing is shortened or summarised. Questions asked twice in other words are kept once; every other question stays. The merged week replaces these ${g.versions.length} versions on the marketplace for everyone, credited to ${authorsText(authors)}. Copies people already added stay as they are.`,

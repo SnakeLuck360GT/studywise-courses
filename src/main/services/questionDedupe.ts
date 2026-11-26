@@ -8,7 +8,7 @@
 
 import type { CourseDedupeOut, CourseQuestion } from '@shared/course'
 import { questionId, type QuestionJudge } from '@shared/weekMerge'
-import { runAI } from '../ai'
+import { friendlyError, runAI } from '../ai'
 
 interface Group {
   a: CourseQuestion[]
@@ -52,7 +52,7 @@ export async function askAboutRepeats(
     signal?: AbortSignal
     onProgress?: (done: number, total: number) => void
   }
-): Promise<{ judge: QuestionJudge; pairs: number; checked: boolean }> {
+): Promise<{ judge: QuestionJudge; pairs: number; checked: boolean; error?: string | null }> {
   const decisions = new Map<string, 'a' | 'b'>()
   const key = (a: CourseQuestion, b: CourseQuestion) => `${questionId(a)}\u0000${questionId(b)}`
   const judge: QuestionJudge = {
@@ -76,6 +76,7 @@ export async function askAboutRepeats(
   if (cur.length) batches.push(cur)
 
   let checked = true
+  let error: string | null = null
   for (const [bi, batch] of batches.entries()) {
     if (opts.signal?.aborted) break
     opts.onProgress?.(bi, batches.length)
@@ -103,11 +104,13 @@ export async function askAboutRepeats(
         decisions.set(key(qa, qb), p.keep)
       }
     } catch (e) {
-      // No AI (offline, not set up, failed): those questions merge as before, exact repeats only.
+      // No AI (offline, not set up, failed): says so, and why (merging stops rather than going ahead unchecked).
       checked = false
-      console.warn('[merge] repeat check skipped:', e instanceof Error ? e.message : e)
+      error = friendlyError(e)
+      console.warn('[merge] repeat check failed:', error)
+      break
     }
   }
   opts.onProgress?.(batches.length, batches.length)
-  return { judge, pairs: decisions.size, checked }
+  return { judge, pairs: decisions.size, checked, error }
 }

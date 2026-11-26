@@ -11,13 +11,32 @@
 //              the same thing in other words (questionDedupe.ts); every other
 //              question is kept.
 //
-// If the AI can't be reached (offline, not set up, an error), the merge goes
-// ahead without it, exactly as before.
+// Merging needs the AI: in offline mode, or when it can't be reached (no
+// connection, not logged in, an error), the merge stops before anything is
+// changed (MergeNeedsAi), rather than merging without combining.
 
 import type { CourseCombineOut, TopicContent } from '@shared/course'
 import { contentPairKey, type ContentPlan, type ContentPlanner, type QuestionJudge } from '@shared/weekMerge'
-import { runAI } from '../ai'
+import { friendlyError, runAI } from '../ai'
+import { isOffline } from '../offline'
 import { askAboutRepeats, questionCollector } from './questionDedupe'
+
+/** Why a merge didn't go ahead: Claude (or the AI set up) was needed and couldn't be used. Nothing was changed. */
+export class MergeNeedsAi extends Error {
+  constructor(reason?: string) {
+    super(
+      reason
+        ? `Merging needs Claude to combine the copies, and it couldn’t be reached (${reason}). Nothing was merged: check your connection and try again.`
+        : 'Merging needs a connection: Claude combines the copies’ notes and questions, so it can’t be done in offline mode. Turn off offline mode and try again. Nothing was merged.'
+    )
+    this.name = 'MergeNeedsAi'
+  }
+}
+
+/** Throws when merging can't use the AI right now (offline mode). */
+export function assertCanMerge(): void {
+  if (isOffline()) throw new MergeNeedsAi()
+}
 
 interface Pair {
   key: string
@@ -115,8 +134,9 @@ export async function combineContents(pairs: Pair[], opts: CombineOptions): Prom
         combined += unique.length
       }
     } catch (e) {
-      ok = false
-      console.warn('[merge] combining notes skipped:', e instanceof Error ? e.message : e)
+      // No AI: the merge stops here (nothing has been changed yet) rather than going ahead uncombined.
+      if (opts.signal?.aborted) throw new Error('Cancelled')
+      throw new MergeNeedsAi(friendlyError(e))
     }
   }
   return { plans, combined, checked: ok }
@@ -133,11 +153,13 @@ export async function planMerge(
   run: (planner: ContentPlanner, judge: QuestionJudge | null) => unknown,
   opts: CombineOptions
 ): Promise<{ planner: ContentPlanner; judge: QuestionJudge; combined: number; repeats: number; checked: boolean }> {
+  assertCanMerge()
   const plans = new Map<string, ContentPlan | null>()
   const planner: ContentPlanner = { plan: (a, b) => plans.get(contentPairKey(a, b)) ?? null }
   let combined = 0
   let ok = true
-  for (let round = 0; round < 10 && !opts.signal?.aborted; round++) {
+  for (let round = 0; round < 10; round++) {
+    if (opts.signal?.aborted) throw new Error('Cancelled')
     const pending = new Map<string, Pair>()
     await run(
       {
@@ -159,5 +181,8 @@ export async function planMerge(
   const collect = questionCollector()
   await run(planner, collect.judge)
   const q = await askAboutRepeats(collect.groups, { module: opts.module, deckId: opts.deckId, signal: opts.signal })
+  if (opts.signal?.aborted) throw new Error('Cancelled')
+  // The question check couldn't reach the AI either: stop, as above.
+  if (!q.checked) throw new MergeNeedsAi(q.error ?? 'the question check failed')
   return { planner, judge: q.judge, combined, repeats: q.pairs, checked: ok && q.checked }
 }
