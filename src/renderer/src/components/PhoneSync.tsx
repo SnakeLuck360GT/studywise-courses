@@ -28,6 +28,9 @@ export function timeAgo(iso: string | null): string {
 export function DesktopPhoneTab() {
   const [s, setS] = useState<SyncStatus | null>(null)
   const [link, setLink] = useState<LinkStatus | null>(null)
+  // With cloud sync on, computers sync through the cloud (no linking), and pairing a phone is only for AI.
+  const [cloud] = useCloudStatus()
+  const viaCloud = cloud?.on === true
   const [busy, setBusy] = useState(false)
   const known = useRef<number | null>(null)
 
@@ -69,13 +72,21 @@ export function DesktopPhoneTab() {
       <CloudCard />
       <Card className="flex flex-col gap-4">
         <h3 className="flex items-center gap-2 text-lg font-semibold">
-          <Smartphone className="size-5" /> Sync with your phone or another computer
+          <Smartphone className="size-5" /> {viaCloud ? 'Use this computer’s AI from your phone' : 'Sync with your phone or another computer'}
         </h3>
-        <p className="text-[0.92rem] text-muted">
-          The Studywise phone app (Android or iPhone) keeps its own copy of your decks, notes and courses, so you can study offline. When it can reach this computer it syncs both ways: progress, reviews and edits made on either side. AI features on the phone (Explain, marking, writing topics) run here, through your Claude login.
-        </p>
-        <p className="text-[0.92rem] text-muted">Another computer can link to this one the same way and gets everything, course files included, with no file to copy.</p>
-        <Toggle checked={s.enabled} disabled={busy} onChange={setEnabled} label="Let paired phones and computers on this network sync" />
+        {viaCloud ? (
+          <p className="text-[0.92rem] text-muted">
+            Your phone’s library syncs through the cloud, so it doesn’t need this computer for that. Pair it here so its AI features (Explain, marking written answers, writing topics) run on this computer, through your Claude login, when it’s on the same Wi‑Fi. Other computers don’t need pairing at all: turn on cloud sync on them.
+          </p>
+        ) : (
+          <>
+            <p className="text-[0.92rem] text-muted">
+              The Studywise phone app (Android or iPhone) keeps its own copy of your decks, notes and courses, so you can study offline. When it can reach this computer it syncs both ways: progress, reviews and edits made on either side. AI features on the phone (Explain, marking, writing topics) run here, through your Claude login.
+            </p>
+            <p className="text-[0.92rem] text-muted">Another computer can link to this one the same way and gets everything, course files included, with no file to copy. (Or turn on cloud sync above, on both.)</p>
+          </>
+        )}
+        <Toggle checked={s.enabled} disabled={busy} onChange={setEnabled} label={viaCloud ? 'Let paired phones on this network use this computer' : 'Let paired phones and computers on this network sync'} />
         {s.enabled && (
           <div className="rounded-lg bg-surface-2 px-4 py-3 text-[0.9rem]">
             {s.running ? (
@@ -102,10 +113,10 @@ export function DesktopPhoneTab() {
       <Card className="flex flex-col gap-4">
         <h3 className="text-lg font-semibold">Pair a device</h3>
         {!s.enabled || !s.running ? (
-          <p className="text-[0.92rem] text-muted">Turn on syncing first.</p>
+          <p className="text-[0.92rem] text-muted">{viaCloud ? 'Turn on the switch first.' : 'Turn on syncing first.'}</p>
         ) : s.pairCode ? (
           <div className="flex flex-col gap-3">
-            <p className="text-[0.92rem] text-muted">On a phone, open Settings → Sync. On another computer, open Settings → Devices → Link to another computer. Then enter:</p>
+            <p className="text-[0.92rem] text-muted">{viaCloud ? 'On your phone, open Settings → Sync. Then enter:' : 'On a phone, open Settings → Sync. On another computer, open Settings → Devices → Link to another computer. Then enter:'}</p>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-xl border border-line bg-surface-2 px-4 py-3">
                 <div className="text-[0.8rem] text-muted">Computer address</div>
@@ -121,7 +132,7 @@ export function DesktopPhoneTab() {
           </div>
         ) : (
           <div className="flex flex-col items-start gap-3">
-            <p className="text-[0.92rem] text-muted">Get a one-time code to type on the phone or the other computer.</p>
+            <p className="text-[0.92rem] text-muted">{viaCloud ? 'Get a one-time code to type on your phone.' : 'Get a one-time code to type on the phone or the other computer.'}</p>
             <Button variant="primary" onClick={async () => setS(await api.sync.pairCode())}>
               <Smartphone className="size-4" /> Pair a device
             </Button>
@@ -129,8 +140,8 @@ export function DesktopPhoneTab() {
         )}
       </Card>
 
-      <SyncedDevices status={s} link={link} onStatus={setS} onLink={setLink} />
-      {!link.linked && <LinkComputerCard onLinked={setLink} />}
+      <SyncedDevices status={s} link={link} viaCloud={viaCloud} onStatus={setS} onLink={setLink} />
+      {!link.linked && !viaCloud && <LinkComputerCard onLinked={setLink} />}
     </div>
   )
 }
@@ -153,11 +164,27 @@ function DeviceRow({ kind, name, lines, busy, warn, actions }: { kind: 'phone' |
   )
 }
 
-function SyncedDevices({ status, link, onStatus, onLink }: { status: SyncStatus; link: LinkStatus; onStatus: (s: SyncStatus) => void; onLink: (s: LinkStatus) => void }) {
+function SyncedDevices({ status, link, viaCloud, onStatus, onLink }: { status: SyncStatus; link: LinkStatus; viaCloud: boolean; onStatus: (s: SyncStatus) => void; onLink: (s: LinkStatus) => void }) {
   const none = !link.linked && !status.devices.length
+  const unlink = async () => {
+    if (await confirmDialog(`Unlink from ${link.name}?`, viaCloud ? 'Nothing is lost: both computers keep everything and carry on syncing through the cloud (as long as it’s on there too).' : 'Both computers keep everything they have, but changes stop going between them until you link again.', { confirmText: 'Unlink', danger: !viaCloud }))
+      onLink(await api.sync.unlink())
+  }
+  if (viaCloud && none) return null
   return (
     <Card className="flex flex-col gap-3 lg:col-span-2">
-      <h3 className="text-lg font-semibold">Synced devices</h3>
+      <h3 className="text-lg font-semibold">{viaCloud ? 'Paired here' : 'Synced devices'}</h3>
+      {viaCloud && link.linked && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent-soft px-4 py-3 text-[0.9rem]">
+          <Cloud className="size-4 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1">
+            <span className="font-semibold">You don’t need the link to {link.name} any more.</span> <span className="text-muted">With cloud sync on both, they sync through the cloud; the link only sends the same changes twice.</span>
+          </span>
+          <Button size="sm" onClick={() => void unlink()}>
+            Unlink
+          </Button>
+        </div>
+      )}
       {none ? (
         <p className="text-[0.92rem] text-muted">None yet. Pair a phone or computer above, or link this computer to another one below.</p>
       ) : (
@@ -184,10 +211,7 @@ function SyncedDevices({ status, link, onStatus, onLink }: { status: SyncStatus;
                     variant="ghost"
                     title="Unlink"
                     aria-label={`Unlink from ${link.name}`}
-                    onClick={async () => {
-                      if (await confirmDialog(`Unlink from ${link.name}?`, 'Both computers keep everything they have, but changes stop going between them until you link again.', { confirmText: 'Unlink', danger: true }))
-                        onLink(await api.sync.unlink())
-                    }}
+                    onClick={() => void unlink()}
                   >
                     <Trash2 className="size-4" />
                   </Button>
@@ -200,7 +224,7 @@ function SyncedDevices({ status, link, onStatus, onLink }: { status: SyncStatus;
               key={d.id}
               kind={d.kind}
               name={d.name}
-              lines={['Paired with this computer', `Synced ${timeAgo(d.lastSync)}`]}
+              lines={viaCloud ? ['Paired for AI', `Last here ${timeAgo(d.lastSync)}`] : ['Paired with this computer', `Synced ${timeAgo(d.lastSync)}`]}
               actions={
                 <Button
                   size="icon"
@@ -223,7 +247,7 @@ function SyncedDevices({ status, link, onStatus, onLink }: { status: SyncStatus;
           <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {link.error}
         </div>
       )}
-      {!none && (
+      {!none && !viaCloud && (
         <p className="text-[0.85rem] text-muted">
           Devices sync in the background while Studywise is open on both: a few seconds after a change, and every minute. Settings, prompts and API keys stay on each device.
           {link.linked && status.devices.length > 0 && ` Devices paired with this computer sync through it to ${link.name} too.`}
