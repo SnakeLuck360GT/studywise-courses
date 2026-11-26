@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { getSetting, setSetting } from '../db/repo'
 import { getSecret, setSecret } from '../secrets'
 import { getDb } from '../db'
-import { getCourse as localCourse, setCoursePrivate, setWeekPrivate, weekFingerprint } from './course'
+import { deleteWeek, getCourse as localCourse, setCoursePrivate, setWeekPrivate, updateWeekFrom, weekFingerprint } from './course'
 import { importWeek, weekContentHash, weekZip } from './weekShare'
 import { mergeWeekZips } from './weekMerge'
 import { planMerge } from './contentCombine'
@@ -457,6 +457,38 @@ export async function download(remoteWeekId: string): Promise<string> {
 }
 
 const added = () => getSetting<Record<string, { weekId: string; at: string }>>(ADDED_SETTING, {})
+
+/**
+ * Brings a week you added up to date with the marketplace's newer version, in
+ * place (course.updateWeekFrom): the new notes, questions, flashcards and
+ * files, with your progress and card reviews kept. No AI. `levels`: the levels
+ * of detail to bring in (every level when missing).
+ */
+export async function updateFromMarket(
+  remoteWeekId: string,
+  opts: { mine: boolean; marketCourseId?: string; levels?: string[] }
+): Promise<Awaited<ReturnType<typeof updateWeekFrom>> & { week: string; course: string; fellBack: number }> {
+  const copy = copies()[remoteWeekId]
+  if (!copy) throw new Error('You don’t have this week any more. Add it instead.')
+  const file = await download(remoteWeekId)
+  try {
+    const fresh = await importWeek(file, { courseId: copy.courseId }, { levels: opts.levels })
+    let r: Awaited<ReturnType<typeof updateWeekFrom>>
+    try {
+      r = await updateWeekFrom(copy.weekId, fresh.weekId)
+    } catch (e) {
+      // Nothing was changed (it checks first): the downloaded copy goes again.
+      if (getDb().prepare('SELECT 1 FROM weeks WHERE id = ?').get(fresh.weekId)) deleteWeek(fresh.weekId)
+      throw e
+    } finally {
+      setSetting(IMPORTED_WEEKS_SETTING, getSetting<string[]>(IMPORTED_WEEKS_SETTING, []).filter((id) => id !== fresh.weekId))
+    }
+    recordAdded(remoteWeekId, copy.weekId, opts.mine, opts.marketCourseId)
+    return { ...r, week: copy.week, course: copy.course, fellBack: fresh.fellBack }
+  } finally {
+    rmSync(file, { force: true })
+  }
+}
 
 /**
  * A marketplace week went into one of your weeks. Your own (published from

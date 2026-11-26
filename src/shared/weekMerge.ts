@@ -25,7 +25,7 @@
 // library (src/main/services/course.ts) and weeks on the marketplace
 // (src/main/services/weekMerge.ts).
 
-import { weekNumber, type CourseQuestion, type OutlineTopic, type TopicContent, type TopicSection } from './course'
+import { weekNumber, type CourseQuestion, type OutlineTopic, type TopicContent, type TopicProgress, type TopicSection } from './course'
 
 // ---------------------------------------------------------------------------
 // Comparing text
@@ -340,6 +340,31 @@ export function remapContent(c: TopicContent, files: Map<string, string>, cards:
 
 /** Recall cards' fronts, for spotting the same card in two decks. */
 export const cardKey = (front: string) => normText(front.replace(/\(\d+\)\s*$/, ''))
+
+/**
+ * Your progress on a topic's notes, carried over to a newer version of them
+ * (a marketplace week updated): the sections you'd already been through count
+ * as studied by their headings, and you carry on at the first section of the
+ * new version you haven't studied. A finished topic stays finished unless the
+ * new version has sections you haven't seen. With no headings in common
+ * (everything renamed), you stay at the same place, as far as it goes.
+ */
+export function carryProgress(p: TopicProgress, before: TopicContent | null | undefined, after: TopicContent): TopicProgress {
+  const was = before?.sections ?? []
+  const now = after.sections
+  if (!was.length) return p.done || p.section ? { ...p, section: Math.min(p.section, now.length), step: null } : p
+  const same = was.length === now.length && was.every((s, i) => normText(s.heading) === normText(now[i].heading))
+  if (same) return p
+  const studied = new Set(was.slice(0, p.done ? was.length : p.section).map((s) => normText(s.heading)))
+  const known = new Set(was.map((s) => normText(s.heading)))
+  if (!now.some((s) => known.has(normText(s.heading)))) {
+    const section = Math.min(p.section, now.length)
+    return { ...p, section, done: p.done && now.length <= was.length, step: null }
+  }
+  const next = now.findIndex((s) => !studied.has(normText(s.heading)))
+  if (next === -1) return { ...p, section: now.length, step: null }
+  return { ...p, done: false, section: next, step: null }
+}
 
 // ---------------------------------------------------------------------------
 // Spotting duplicate weeks in a course

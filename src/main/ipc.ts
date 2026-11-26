@@ -642,6 +642,11 @@ export const handlers = {
       const file = await market.download(i.id)
       return { file, ...(await weekShare.previewWeek(file)) }
     }),
+    /** Bring a week you added up to date with its newer version, in place: your progress and card reviews stay. */
+    update: h(
+      z.object({ id, mine: z.boolean(), courseId: z.string().optional(), levels: z.array(z.enum(NOTE_LEVELS)).min(1).optional() }),
+      (i) => market.updateFromMarket(i.id, { mine: i.mine, marketCourseId: i.courseId, levels: i.levels })
+    ),
     similar: h(z.object({ weekId: id }), (i) => market.similar(i.weekId)),
     /** What downloading these courses (all their weeks, or the ones you don't have) would add, and where. */
     planAdd: h(addCourses, (i) => market.planAdds(i.targets, i.mode, !!i.onlyMine)),

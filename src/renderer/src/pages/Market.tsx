@@ -3,7 +3,7 @@ import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, FileText, Flag, 
 import { authorsText, modelLabel, weeksByWeek, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketSort, type MarketWeek, type WeekGroup } from '@shared/market'
 import { NOTE_LEVELS, NOTE_LEVEL_INFO, isNoteLevel } from '@shared/course'
 import { api, errorText } from '../lib/api'
-import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, levelCounts, marketCopies, modelsText, publishAllToMarket, weekSummary } from '../lib/market'
+import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, isOutdated, levelCounts, marketCopies, modelsText, publishAllToMarket, updateMarketWeek, updateMarketWeeks, weekSummary } from '../lib/market'
 import { askText, chooseDialog, confirmDialog } from '../lib/dialogs'
 import { canMergeNow } from '../lib/courseFlows'
 import { toast, useStore } from '../lib/store'
@@ -184,7 +184,16 @@ function MarketCoursePage({ id }: { id: string }) {
   if (!c) return null
   return (
     <Shell>
-      <PageTitle eyebrow={back} title={c.name} actions={<DownloadButtons onDownload={(mode) => void downloadMarketCourse(c, mode)} />}>
+      <PageTitle
+        eyebrow={back}
+        title={c.name}
+        actions={
+          <>
+            <UpdateAllButton weeks={c.weeks} copies={copies.map} onDone={copies.reload} />
+            <DownloadButtons onDownload={(mode) => void downloadMarketCourse(c, mode)} />
+          </>
+        }
+      >
         <span>
           Weeks by {authorsText(c.authors)}
           {c.module && c.module !== c.name ? ` · ${c.module}` : ''}
@@ -278,6 +287,27 @@ function useCopies(): { map: Record<string, MarketCopy>; reload: () => void } {
   return { map, reload }
 }
 
+/** Update every week here that has a newer version than the one you added (shown only when there are any). */
+function UpdateAllButton({ weeks, copies, onDone }: { weeks: MarketWeek[]; copies: Record<string, MarketCopy>; onDone: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const items = weeks.filter((w) => isOutdated(w, copies[w.id])).map((w) => ({ w, copy: copies[w.id] }))
+  if (!items.length) return null
+  return (
+    <Button
+      variant="primary"
+      loading={busy}
+      title="Bring your copies up to date, keeping your progress"
+      onClick={async () => {
+        setBusy(true)
+        if (await updateMarketWeeks(items)) onDone()
+        setBusy(false)
+      }}
+    >
+      <RefreshCw className="size-4" /> {items.length === 1 ? 'Update 1 week' : `Update ${items.length} weeks`}
+    </Button>
+  )
+}
+
 type Mode = 'all' | 'missing'
 
 /** Download the weeks you don't have yet, or every week. */
@@ -327,8 +357,13 @@ function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: Market
     if (await addMarketWeek(w)) onAdded()
     setBusy(false)
   }
-  // Republished since you added it: your copy is the older version.
-  const newer = copy?.how === 'added' && !!copy.at && new Date(w.updatedAt) > new Date(copy.at)
+  const newer = isOutdated(w, copy)
+  const [updating, setUpdating] = useState(false)
+  const update = async () => {
+    setUpdating(true)
+    if (copy && (await updateMarketWeek(w, copy))) onAdded()
+    setUpdating(false)
+  }
   // Which depths its topics are written at, and how many of each.
   const counts = levelCounts([w])
   const depths = NOTE_LEVELS.filter((l) => counts[l]).map((l) => [l, counts[l]!] as const)
@@ -418,9 +453,14 @@ function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: Market
           </Button>
         )}
         {/* Your own too: on another device (or with another key) it's how you get it there. */}
-        <Button variant={copy && !newer ? 'outline' : 'primary'} size="sm" loading={busy} onClick={add}>
+        <Button variant={copy ? (newer ? 'ghost' : 'outline') : 'primary'} size="sm" loading={busy} onClick={add} title={copy ? 'Add a second, separate copy (with its own progress)' : undefined}>
           <Download className="size-4" /> {copy ? 'Add again' : 'Add to my courses'}
         </Button>
+        {newer && (
+          <Button variant="primary" size="sm" loading={updating} onClick={() => void update()} title="Bring your copy up to date, keeping your progress">
+            <RefreshCw className="size-4" /> Update
+          </Button>
+        )}
       </div>
       {open && (
         <div className="flex flex-col gap-3 border-t border-line px-4 py-4">
@@ -484,6 +524,7 @@ function MyWeeks() {
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-end gap-2">
         <span className="mr-auto text-[0.88rem] text-muted">On another device? Download what you’ve published into your courses here.</span>
+        <UpdateAllButton weeks={weeks} copies={copies.map} onDone={copies.reload} />
         <DownloadButtons what="my weeks" onDownload={(mode) => void downloadMyWeeks(mode)} />
       </div>
       {weeks.map((w) => (

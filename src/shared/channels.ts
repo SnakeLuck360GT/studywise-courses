@@ -115,6 +115,7 @@ export const CHANNELS = [
   'market.announcement',
   'market.merge',
   'market.download',
+  'market.update',
   'market.similar',
   'market.planAdd',
   'market.addMany',

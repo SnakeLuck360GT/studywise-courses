@@ -68,6 +68,7 @@ import {
 } from '@shared/course'
 import {
   cardKey,
+  carryProgress,
   matchTopics,
   mergeLevels,
   mergePlan,
@@ -817,6 +818,240 @@ export async function mergeWeeks(
   }
   touchCourse(target.course_id)
   return { weekId: targetId, merged, added, cards, files }
+}
+
+/**
+ * A newer version of a week replaces it in place (a marketplace week that was
+ * updated since you added it). `newWeekId` is the new version, just imported
+ * into the same course: its content goes into `weekId`, which keeps its id (so
+ * your notes, decks and what the marketplace remembers stay pointing at it),
+ * and the imported copy goes. Unlike merging, the old version's content isn't
+ * kept, only your own work:
+ *   topics        the same topic (matched as merging does) takes the new notes
+ *                 at every level the new version has (levels only you have
+ *                 stay), and your progress carries over by section heading
+ *                 (carryProgress); new topics are added, and topics the new
+ *                 version no longer has go
+ *   recall cards  the same card (by its front) keeps its reviews and takes the
+ *                 new wording; new ones are added, and topic cards the new
+ *                 version dropped go; cards you made yourself stay
+ *   files         the same bytes stay as they are; a file the new version
+ *                 replaced (same name) is swapped for it; new ones are added
+ *   test          the new end-of-week test if its questions changed
+ */
+export async function updateWeekFrom(
+  weekId: string,
+  newWeekId: string
+): Promise<{ weekId: string; updated: number; added: number; removed: number; cards: number; files: number }> {
+  const d = getDb()
+  const { target: old, others } = mergeableWeeks(weekId, [newWeekId])
+  const fresh = others[0]
+  const deckId = ensureWeekDeck(weekId)
+  const sha = (p: string) => (existsSync(p) ? createHash('sha256').update(readFileSync(p)).digest('hex') : null)
+
+  // Files.
+  const all = listFiles(old.course_id)
+  const oldFiles = all.filter((f) => f.week_id === weekId)
+  const byHash = new Map<string, CourseFile>()
+  for (const f of oldFiles) {
+    const h = sha(f.path)
+    if (h) byHash.set(h, f)
+  }
+  const fileMap = new Map<string, string>() // new version's file id → the one it is now
+  const oldFileMap = new Map<string, string>() // an old file that was replaced → its replacement
+  const renamed = new Map<string, string>() // a file name in the new topics' plans → the name it has now
+  let files = 0
+  let filePos = oldFiles.length
+  for (const f of all.filter((f) => f.week_id === newWeekId)) {
+    const h = sha(f.path)
+    const same = h ? byHash.get(h) : undefined
+    if (same) {
+      fileMap.set(f.id, same.id)
+      if (same.name !== f.name) renamed.set(f.name, same.name)
+      d.prepare('DELETE FROM course_files WHERE id = ?').run(f.id)
+      if (ownedFile(f.path)) rmSync(f.path, { force: true })
+      continue
+    }
+    files++
+    // The new version of a file you have (importing numbered it, as the name was taken): it takes the old one's place and name.
+    const base = f.name.replace(/ \(\d+\)(\.[^.]*)?$/, '$1').toLowerCase()
+    const replaced = oldFiles.find((o) => o.name.toLowerCase() === base && ![...fileMap.values(), ...oldFileMap.keys()].includes(o.id))
+    if (replaced && ownedFile(replaced.path) && ownedFile(f.path)) {
+      const position = (d.prepare('SELECT position FROM course_files WHERE id = ?').get(replaced.id) as { position: number }).position
+      d.prepare('DELETE FROM course_files WHERE id = ?').run(replaced.id)
+      rmSync(replaced.path, { force: true })
+      renameSync(f.path, replaced.path)
+      d.prepare('UPDATE course_files SET week_id = ?, position = ?, name = ?, path = ? WHERE id = ?').run(weekId, position, replaced.name, replaced.path, f.id)
+      oldFileMap.set(replaced.id, f.id)
+      renamed.set(f.name, replaced.name)
+      continue
+    }
+    d.prepare('UPDATE course_files SET week_id = ?, position = ? WHERE id = ?').run(weekId, filePos++, f.id)
+  }
+
+  // Topics, in the new version's order.
+  const load = (id: string) => d.prepare('SELECT * FROM topics WHERE week_id = ? ORDER BY position').all(id) as TopicRow[]
+  const mine = load(weekId)
+  const theirs = load(newWeekId)
+  const matches = matchTopics(mine.map(mergeTopicOf), theirs.map(mergeTopicOf))
+  const used = new Set<number>()
+  const weekNo = old.position + 1
+  let lastT = Math.max(0, ...mine.map((t) => Number(t.key.match(/t(\d+)$/)?.[1] ?? 0)))
+  const keyMap = new Map<string, string>()
+  const into = theirs.map((t) => {
+    const m = matches.get(theirs.indexOf(t))
+    if (m === undefined || used.has(m)) return null
+    used.add(m)
+    return mine[m]
+  })
+  theirs.forEach((t, j) => keyMap.set(t.key, into[j]?.key ?? `w${weekNo}t${++lastT}`))
+
+  // Recall cards: the same card (the same front, of the same topic) keeps its reviews and takes the new wording.
+  type CardRow = { id: string; front: string; back: string; format: string; kind: string; options: string; cloze_answers: string; hints: string; explanation: string; source: string | null; required_points: number | null }
+  const cardsIn = (deck: string | null | undefined) => (deckExists(deck) ? (d.prepare('SELECT * FROM cards WHERE deck_id = ?').all(deck) as CardRow[]) : [])
+  const topicOf = (c: CardRow) => {
+    const s = json<{ type?: string; ref?: string } | null>(c.source, null)
+    return s?.type === 'topic' && s.ref ? s.ref : ''
+  }
+  // A new version's topic → the topic of yours it updates.
+  const yoursFor = new Map(theirs.flatMap((t, j) => (into[j] ? [[t.id, into[j]!.id] as const] : [])))
+  const keyOf = (c: CardRow, ref = topicOf(c)) => (cardKey(c.front) ? `${ref}\u0001${cardKey(c.front)}` : '')
+  const oldCards = cardsIn(deckId)
+  const byKey = new Map<string, string[]>()
+  for (const c of oldCards) {
+    const k = keyOf(c)
+    if (k) byKey.set(k, [...(byKey.get(k) ?? []), c.id])
+  }
+  const cardMap = new Map<string, string>()
+  const kept = new Set<string>()
+  const moving: string[] = []
+  const reword = d.prepare(
+    'UPDATE cards SET front = ?, back = ?, format = ?, kind = ?, options = ?, cloze_answers = ?, hints = ?, explanation = ?, source = ?, required_points = ?, updated_at = ? WHERE id = ?'
+  )
+  for (const c of cardsIn(fresh.deck_id)) {
+    const ref = topicOf(c)
+    const k = keyOf(c, ref && (yoursFor.get(ref) ?? ref))
+    const same = k ? byKey.get(k)?.find((id) => !kept.has(id)) : undefined
+    if (!same) {
+      moving.push(c.id)
+      continue
+    }
+    kept.add(same)
+    cardMap.set(c.id, same)
+    reword.run(c.front, c.back, c.format, c.kind, c.options, c.cloze_answers, c.hints, c.explanation, c.source, c.required_points, now(), same)
+    d.prepare('DELETE FROM cards WHERE id = ?').run(c.id)
+  }
+  if (moving.length) repo.moveCards(moving, deckId)
+  const rekey = (s: string) => s.replace(/"(w\d+t\d+)"/g, (m, k: string) => (keyMap.has(k) ? `"${keyMap.get(k)}"` : m))
+  const planOf = (t: TopicRow, key: string) => {
+    const plan = json<OutlineTopic | null>(rekey(t.plan), null)
+    if (!plan) return t.plan
+    for (const s of (plan as { sources?: { file: string }[] }).sources ?? []) if (renamed.has(s.file)) s.file = renamed.get(s.file)!
+    return JSON.stringify({ ...plan, id: key })
+  }
+  const contentsOf = (r: TopicRow, files: Map<string, string>, cards: Map<string, string>) => {
+    const out: Partial<Record<NoteLevel, TopicContent>> = {}
+    const shown = json<TopicContent | null>(r.content, null)
+    if (shown) out[rowLevel(r)] = remapContent(shown, files, cards)
+    for (const [l, v] of Object.entries(rowVersions(r))) if (v?.content && !out[l as NoteLevel]) out[l as NoteLevel] = remapContent(v.content, files, cards)
+    return out
+  }
+  const retag = d.prepare("UPDATE cards SET source = json_set(source, '$.ref', ?) WHERE json_extract(source, '$.type') = 'topic' AND json_extract(source, '$.ref') = ?")
+  let updated = 0
+  let added = 0
+  theirs.forEach((t, j) => {
+    const key = keyMap.get(t.key)!
+    const plan = planOf(t, key)
+    const target = into[j]
+    if (!target) {
+      // A topic the old version didn't have.
+      const level = rowLevel(t)
+      const contents = contentsOf(t, fileMap, cardMap)
+      const versions = Object.fromEntries(Object.entries(rowVersions(t)).map(([l, v]) => [l, { ...v, content: contents[l as NoteLevel] ?? v!.content }]))
+      d.prepare('UPDATE topics SET week_id = ?, key = ?, position = ?, plan = ?, content = ?, versions = ?, updated_at = ? WHERE id = ?').run(
+        weekId,
+        key,
+        j,
+        plan,
+        contents[level] ? JSON.stringify(contents[level]) : t.content,
+        JSON.stringify(versions),
+        now(),
+        t.id
+      )
+      added++
+      return
+    }
+    // The same topic: the new notes, with your progress and any levels only you have.
+    const before = contentsOf(target, oldFileMap, new Map())
+    const fromNew = contentsOf(t, fileMap, cardMap)
+    const contents = { ...before, ...fromNew }
+    const levels = NOTE_LEVELS.filter((l) => contents[l])
+    const level = contents[rowLevel(target)] ? rowLevel(target) : (levels[0] ?? rowLevel(target))
+    const oldVersions = rowVersions(target)
+    const progressAt = (l: NoteLevel): TopicProgress => {
+      const p = l === rowLevel(target) && target.content ? { ...emptyProgress(), ...json<Partial<TopicProgress>>(target.progress, {}) } : oldVersions[l]?.progress
+      if (!p) return emptyProgress()
+      return fromNew[l] ? carryProgress(p, before[l], fromNew[l]!) : p
+    }
+    const versions = Object.fromEntries(levels.filter((l) => l !== level).map((l) => [l, { content: contents[l], progress: progressAt(l) }]))
+    const writtenWith = { ...json<Record<string, unknown>>(target.written_with, {}), ...json<Record<string, unknown>>(t.written_with, {}) }
+    d.prepare('UPDATE topics SET key = ?, position = ?, status = ?, error = ?, plan = ?, content = ?, level = ?, versions = ?, progress = ?, written_with = ?, updated_at = ? WHERE id = ?').run(
+      key,
+      j,
+      contents[level] ? 'ready' : t.status,
+      contents[level] ? null : t.error,
+      plan,
+      contents[level] ? JSON.stringify(contents[level]) : null,
+      level,
+      JSON.stringify(versions),
+      JSON.stringify(contents[level] ? progressAt(level) : emptyProgress()),
+      JSON.stringify(writtenWith),
+      now(),
+      target.id
+    )
+    retag.run(target.id, t.id)
+    d.prepare('DELETE FROM topics WHERE id = ?').run(t.id)
+    if (t.note_id) repo.deleteNote(t.note_id)
+    updated++
+  })
+
+  // Topics the new version no longer has go, and so do topic cards it dropped (yours stay).
+  const gone = mine.filter((t) => !into.includes(t))
+  const mineIds = new Set(mine.map((t) => t.id))
+  const dropped = oldCards.filter((c) => {
+    if (kept.has(c.id)) return false
+    const src = json<{ type?: string; ref?: string } | null>(c.source, null)
+    return src?.type === 'topic' && !!src.ref && mineIds.has(src.ref)
+  })
+  if (dropped.length) repo.deleteCards(dropped.map((c) => c.id))
+  for (const t of gone) {
+    d.prepare('DELETE FROM topics WHERE id = ?').run(t.id)
+    if (t.note_id) repo.deleteNote(t.note_id)
+  }
+  // A remaining old topic level may still show a figure from a replaced file.
+  for (const t of load(weekId)) {
+    if (!oldFileMap.size) break
+    const contents = contentsOf(t, oldFileMap, new Map())
+    const versions = Object.fromEntries(Object.entries(rowVersions(t)).map(([l, v]) => [l, { ...v, content: contents[l as NoteLevel] ?? v!.content }]))
+    d.prepare('UPDATE topics SET content = ?, versions = ? WHERE id = ?').run(contents[rowLevel(t)] ? JSON.stringify(contents[rowLevel(t)]) : t.content, JSON.stringify(versions), t.id)
+  }
+
+  // The week: the new plan, and the new test if its questions changed.
+  const questions = (test: string | null | undefined) => JSON.stringify(json<{ questions?: unknown } | null>(test ?? null, null)?.questions ?? null)
+  setWeek(weekId, {
+    ...(fresh.status === 'ready' ? { status: 'ready', error: null } : {}),
+    outline: fresh.outline ? rekey(fresh.outline) : (old.outline ?? null),
+    planned_with: fresh.planned_with ?? old.planned_with ?? null,
+    ...(fresh.test && questions(fresh.test) !== questions(old.test) ? { test: fresh.test } : {})
+  })
+  deleteWeek(newWeekId)
+
+  for (const t of load(weekId)) {
+    refreshDormancy(t.id)
+    if (t.status === 'ready') await syncTopicNote(t.id).catch(() => null)
+  }
+  touchCourse(old.course_id)
+  return { weekId, updated, added, removed: gone.length, cards: moving.length, files }
 }
 
 // ---------------------------------------------------------------------------

@@ -61,6 +61,77 @@ export async function pickLevels(weeks: Pick<MarketWeek, 'topics'>[], what: stri
 
 const fellBackText = (n: number) => (n ? ` ${plural(n, 'topic')} didn’t have a depth you picked, so ${n === 1 ? 'it came' : 'they came'} in at the depth ${n === 1 ? 'it has' : 'they have'}.` : '')
 
+/** Republished (or merged) since you added it: your copy is the older version. */
+export const isOutdated = (w: Pick<MarketWeek, 'updatedAt'>, copy?: MarketCopy) => copy?.how === 'added' && !!copy.at && new Date(w.updatedAt) > new Date(copy.at)
+
+const WHAT_UPDATES =
+  'The notes, questions, flashcards and files become the new version’s, in the same week. Your progress carries over: you carry on at the first section you haven’t studied, and a topic you finished stays finished unless it gained sections. Flashcards keep their reviews. Topics the new version no longer has are removed; depths only you have, and cards you made yourself, stay. Nothing is generated.'
+
+/** "10 topics updated, 2 added, 5 new recall cards". */
+const updateText = (r: { updated: number; added: number; removed: number; cards: number; files: number }) =>
+  [
+    r.updated && `${plural(r.updated, 'topic')} updated`,
+    r.added && `${plural(r.added, 'new topic')}`,
+    r.removed && `${plural(r.removed, 'topic')} removed`,
+    r.cards && `${plural(r.cards, 'new recall card')}`,
+    r.files && `${plural(r.files, 'new file')}`
+  ]
+    .filter(Boolean)
+    .join(', ')
+
+/**
+ * Bring a week you added up to date with its newer version on the
+ * marketplace, in place: your progress and card reviews stay. True when updated.
+ */
+export async function updateMarketWeek(w: MarketWeek, copy: MarketCopy): Promise<boolean> {
+  const ok = await confirmDialog(`Update ${copyText(copy)} to the newest version?`, WHAT_UPDATES, { confirmText: 'Update' })
+  if (!ok) return false
+  const levels = await pickLevels([w], w.label)
+  if (levels === null) return false
+  try {
+    toast(`Updating ${copy.week}…`, 'info')
+    const r = await api.market.update({ id: w.id, mine: w.mine, courseId: w.courseId, levels })
+    const what = updateText(r)
+    toast(`Updated ${copyText(copy)}${what ? `: ${what}` : ''}.${fellBackText(r.fellBack)}`, 'good')
+    useStore.getState().bump()
+    return true
+  } catch (e) {
+    toast(errorText(e), 'bad')
+    return false
+  }
+}
+
+/** Update several weeks you added to their newer versions, one after another (see updateMarketWeek). */
+export async function updateMarketWeeks(items: { w: MarketWeek; copy: MarketCopy }[]): Promise<boolean> {
+  if (items.length === 1) return updateMarketWeek(items[0].w, items[0].copy)
+  const ok = await confirmDialog(
+    `Update ${items.length} weeks to their newest versions?`,
+    `${items.map((i) => i.copy.week).join(', ')}. ${WHAT_UPDATES}`,
+    { confirmText: `Update ${items.length} weeks` }
+  )
+  if (!ok) return false
+  const levels = await pickLevels(
+    items.map((i) => i.w),
+    'these weeks'
+  )
+  if (levels === null) return false
+  toast(`Updating ${items.length} weeks…`, 'info')
+  let done = 0
+  const failed: string[] = []
+  for (const { w, copy } of items) {
+    try {
+      await api.market.update({ id: w.id, mine: w.mine, courseId: w.courseId, levels })
+      done++
+    } catch (e) {
+      failed.push(`${copy.week}: ${errorText(e)}`)
+    }
+  }
+  useStore.getState().bump()
+  if (done) toast(`Updated ${plural(done, 'week')}${failed.length ? `; ${failed.length} didn’t: ${failed.join('; ')}` : ''}.`, failed.length ? 'info' : 'good')
+  else toast(failed[0] ?? 'Nothing was updated.', 'bad')
+  return done > 0
+}
+
 /** Download a published week, then ask which course it goes in (like a shared week). True when it was added. */
 export async function addMarketWeek(w: { id: string; mine: boolean; courseId: string; label?: string; topics?: MarketWeek['topics'] }): Promise<boolean> {
   try {
