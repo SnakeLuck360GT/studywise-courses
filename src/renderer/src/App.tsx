@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from 'react'
-import { AlertTriangle, X, FileUp, NotebookPen, Layers, Terminal, GraduationCap, Download } from 'lucide-react'
+import { AlertTriangle, X, FileUp, NotebookPen, Layers, Terminal, GraduationCap, Download, Megaphone } from 'lucide-react'
 import type { UpdateStatus } from '@shared/update'
 import { planUsageText } from '@shared/types'
 import { OFFLINE_SETTING } from '@shared/offline'
@@ -393,6 +393,7 @@ export function App() {
       {!IS_MOBILE && focus && <div className="drag h-9 shrink-0" />}
       {!IS_MOBILE && <SetupBanner />}
       {!IS_MOBILE && <UpdateBanner />}
+      {!IS_MOBILE && <AnnouncementBanner />}
       <main className="relative min-h-0 flex-1">
         <div key={pageKey} className={cx('page-in absolute inset-0 overflow-y-auto', !IS_MOBILE && '[scrollbar-gutter:stable_both-edges]')}>
           {!ready ? (
@@ -506,6 +507,43 @@ function openFiles(paths: string[]) {
       if (!rest.length) st.go({ name: 'deck', id: ids[0] })
     })
     .catch((e) => st.toast(errorText(e), 'bad'))
+}
+
+const CLOSED_ANNOUNCEMENT = 'sw.closedAnnouncement'
+
+/** The marketplace admin's message for everyone (checked hourly), until you close it. */
+function AnnouncementBanner() {
+  const [a, setA] = useState<{ id: string; text: string; level: 'info' | 'warn'; link: string | null } | null>(null)
+  const [closed, setClosed] = useState(() => localStorage.getItem(CLOSED_ANNOUNCEMENT))
+  useEffect(() => {
+    const check = () => void api.market.announcement().then(setA).catch(() => {})
+    check()
+    const t = setInterval(check, 60 * 60_000)
+    return () => clearInterval(t)
+  }, [])
+  if (!a || closed === a.id) return null
+  const warn = a.level === 'warn'
+  return (
+    <div className={cx('pop-in mx-3 mt-2.5 flex flex-wrap items-center gap-3 rounded-xl border px-4 py-3 sm:mx-4', warn ? 'border-warn/40 bg-warn-soft' : 'border-accent/30 bg-accent-soft')}>
+      <Megaphone className={cx('size-5 shrink-0', warn ? 'text-warn' : 'text-accent')} />
+      <div className="min-w-0 flex-1 text-[0.92rem]">{a.text}</div>
+      {a.link && (
+        <Button size="sm" variant="ghost" onClick={() => void api.app.openExternal({ url: a.link! })}>
+          More
+        </Button>
+      )}
+      <button
+        onClick={() => {
+          localStorage.setItem(CLOSED_ANNOUNCEMENT, a.id)
+          setClosed(a.id)
+        }}
+        className="text-muted hover:text-ink"
+        aria-label="Dismiss"
+      >
+        <X className="size-4" />
+      </button>
+    </div>
+  )
 }
 
 function OllamaBanner({ problem, onHide }: { problem: string; onHide: () => void }) {

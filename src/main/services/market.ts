@@ -289,6 +289,24 @@ export async function publishMany(weeks: { weekId: string; course: string; label
   return { published, failed }
 }
 
+/** Report someone's week to the marketplace's admins. */
+export async function report(remoteWeekId: string, reason: string, note: string): Promise<void> {
+  await request(`/api/weeks/${remoteWeekId}/report`, json({ reason, note }))
+}
+
+/** The marketplace admin's message for everyone, if there is one (no key needed). */
+export async function announcement(): Promise<{ id: string; text: string; level: 'info' | 'warn'; link: string | null } | null> {
+  const url = marketUrl()
+  if (!url) return null
+  try {
+    const res = await fetch(`${url}/api/announcement`, { signal: AbortSignal.timeout(10_000), headers: { 'user-agent': 'Studywise' } })
+    if (!res.ok) return null
+    return ((await res.json()) as { announcement: Awaited<ReturnType<typeof announcement>> }).announcement ?? null
+  } catch {
+    return null
+  }
+}
+
 export async function remove(remoteWeekId: string): Promise<void> {
   await request(`/api/weeks/${encodeURIComponent(remoteWeekId)}`, { method: 'DELETE' })
   forgetRemote(remoteWeekId)

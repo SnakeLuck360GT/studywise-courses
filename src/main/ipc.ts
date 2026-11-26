@@ -619,6 +619,8 @@ export const handlers = {
       return startJob('other', title, (ctx) => market.publishMany(weeks, ctx))
     }),
     remove: h(z.object({ id }), (i) => market.remove(i.id)),
+    report: h(z.object({ id, reason: z.enum(['wrong', 'copyright', 'spam', 'offensive', 'other']), note: z.string().max(1000).default('') }), (i) => market.report(i.id, i.reason, i.note)),
+    announcement: h(none, () => market.announcement()),
     /** Merge several people's copies of the same week into one for everyone (a job: it downloads each copy). */
     merge: h(z.object({ ids: z.array(id).min(2).max(30), label: z.string().max(200) }), (i) => startJob('other', `Merge ${i.label}`, (ctx) => market.mergeRemote(i.ids, ctx))),
     /** Download a published week; returns a .studyweek file to preview and import. */

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, FileText, ListPlus, Merge, RefreshCw, Search, Store, Trash2, Upload, Users } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, FileText, Flag, ListPlus, Merge, RefreshCw, Search, Store, Trash2, Upload, Users } from 'lucide-react'
 import { authorsText, modelLabel, weeksByWeek, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketSort, type MarketWeek, type WeekGroup } from '@shared/market'
 import { NOTE_LEVELS, NOTE_LEVEL_INFO, isNoteLevel } from '@shared/course'
 import { api, errorText } from '../lib/api'
 import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, levelCounts, marketCopies, modelsText, publishAllToMarket, weekSummary } from '../lib/market'
-import { confirmDialog } from '../lib/dialogs'
+import { askText, chooseDialog, confirmDialog } from '../lib/dialogs'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
 import { MarketSetup } from '../components/MarketSetup'
@@ -340,6 +340,29 @@ function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: Market
       toast(errorText(e), 'bad')
     }
   }
+  // Something wrong with someone else's week: it goes to the marketplace's admins.
+  const report = async () => {
+    const reason = await chooseDialog(
+      `Report ${w.label} by ${authorsText(w.authors ?? [w.author])}?`,
+      [
+        { value: 'wrong', label: 'Wrong or misleading' },
+        { value: 'copyright', label: 'Someone else’s work' },
+        { value: 'spam', label: 'Spam or junk' },
+        { value: 'offensive', label: 'Offensive' },
+        { value: 'other', label: 'Something else…' }
+      ],
+      { label: 'What’s wrong with it?', confirmText: 'Report', message: 'The marketplace’s admins see your report and decide whether to take it down. Who made it isn’t told it was you.' }
+    )
+    if (!reason) return
+    const note = reason === 'other' ? await askText('What’s wrong with it?', { confirmText: 'Report' }) : ''
+    if (note === null) return
+    try {
+      await api.market.report({ id: w.id, reason: reason as 'wrong', note })
+      toast('Reported. Thanks: the admins will take a look.', 'good')
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    }
+  }
   return (
     <div className="rounded-xl border border-line bg-surface">
       <div className="flex flex-wrap items-center gap-3 p-4">
@@ -385,6 +408,11 @@ function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: Market
         {w.mine && (
           <Button variant="ghost" size="sm" onClick={remove}>
             <Trash2 className="size-4" /> Take down
+          </Button>
+        )}
+        {!w.mine && (
+          <Button variant="ghost" size="icon" onClick={() => void report()} title="Report this week" aria-label={`Report ${w.label}`}>
+            <Flag className="size-4" />
           </Button>
         )}
         {/* Your own too: on another device (or with another key) it's how you get it there. */}
