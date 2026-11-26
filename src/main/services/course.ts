@@ -1,8 +1,8 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { FINGERPRINT_VERSION, signature, type WeekFingerprint } from '@shared/fingerprint'
-import { basename, extname, join } from 'node:path'
+import { basename, extname, join, resolve, sep } from 'node:path'
 import { PDFDocument } from 'pdf-lib'
 import { getDb, uid, now, json } from '../db'
 import { withPointCount } from '@shared/ssText'
@@ -66,7 +66,9 @@ import {
   type WeekTestLevel,
   type WeekTestQuestion
 } from '@shared/course'
-import { cardKey, matchTopics, mergeLevels, mergePlan, remapContent, withQuestionJudge, type MergeTopic, type QuestionJudge } from '@shared/weekMerge'
+import { cardKey, matchTopics, mergeLevels, mergePlan, normText, remapContent, titleSimilarity, withQuestionJudge, type MergeTopic, type QuestionJudge } from '@shared/weekMerge'
+import { sameCourse } from '@shared/market'
+import { weekNumber } from '@shared/course'
 import { askAboutRepeats, questionCollector } from './questionDedupe'
 
 // A course is a run of weeks. Each week has its own files; its topics are
@@ -559,6 +561,23 @@ function mergeableWeeks(targetId: string, otherIds: string[]): { target: WeekRow
   return { target, others }
 }
 
+/**
+ * Two copies of the same recall card, `keep` staying: its review history
+ * gets the other's reviews too, and if the other was reviewed more, its place
+ * in the schedule as well.
+ */
+function keepBetterReviews(keep: string, repeat: string): void {
+  const d = getDb()
+  const reps = (id: string) => (d.prepare('SELECT repetitions FROM review_state WHERE card_id = ?').get(id) as { repetitions: number } | undefined)?.repetitions ?? -1
+  if (reps(repeat) > reps(keep)) {
+    d.prepare('DELETE FROM review_state WHERE card_id = ?').run(keep)
+    d.prepare('UPDATE review_state SET card_id = ? WHERE card_id = ?').run(keep, repeat)
+  }
+  // The same review logged on both copies (same time and source) is kept once.
+  d.prepare('DELETE FROM review_log WHERE card_id = ? AND EXISTS (SELECT 1 FROM review_log k WHERE k.card_id = ? AND k.at = review_log.at AND k.source = review_log.source)').run(repeat, keep)
+  d.prepare('UPDATE review_log SET card_id = ? WHERE card_id = ?').run(keep, repeat)
+}
+
 /** A topic's title, plan and every written level, as merging compares them. */
 function mergeTopicOf(r: TopicRow): MergeTopic {
   const contents: Record<string, TopicContent> = {}
@@ -639,7 +658,7 @@ export async function mergeWeeks(targetId: string, otherIds: string[], opts: { j
       if (same) {
         fileMap.set(f.id, same)
         d.prepare('DELETE FROM course_files WHERE id = ?').run(f.id)
-        rmSync(f.path, { force: true })
+        if (ownedFile(f.path)) rmSync(f.path, { force: true })
       } else {
         d.prepare('UPDATE course_files SET week_id = ?, position = ? WHERE id = ?').run(targetId, filePos++, f.id)
         if (h) fileByHash.set(h, f.id)
@@ -661,6 +680,7 @@ export async function mergeWeeks(targetId: string, otherIds: string[], opts: { j
           used.add(same)
           cardMap.set(c.id, same)
           repeats.push(c.id)
+          keepBetterReviews(same, c.id)
         } else {
           moving.push(c.id)
           if (k) cardByKey.set(k, [...(cardByKey.get(k) ?? []), c.id])
@@ -708,9 +728,19 @@ export async function mergeWeeks(targetId: string, otherIds: string[], opts: { j
       const level = contents[into.level] ? into.level : (levels[0] ?? into.level)
       const oldVersions = rowVersions(into.row)
       const theirVersions = rowVersions(t.row)
+      const mineAt = (l: NoteLevel): TopicProgress | undefined =>
+        l === into.level && into.row.content ? { ...emptyProgress(), ...json<Partial<TopicProgress>>(into.row.progress, {}) } : oldVersions[l]?.progress
+      const theirsAt = (l: NoteLevel): TopicProgress | undefined => (l === t.level && t.row.content ? { ...emptyProgress(), ...json<Partial<TopicProgress>>(t.row.progress, {}) } : theirVersions[l]?.progress)
+      const sectionsOf = (c: TopicContent | null | undefined) => c?.sections.length
+      const myContent = (l: NoteLevel) => (l === into.level ? json<TopicContent | null>(into.row.content, null) : oldVersions[l]?.content)
+      // How far you got: finished, then the section, then questions answered.
+      const further = (p: TopicProgress) => (p.done ? 1e9 : 0) + p.section * 1e4 + p.answered
       const progressOf = (l: NoteLevel): TopicProgress => {
-        if (l === into.level && into.row.content) return { ...emptyProgress(), ...json<Partial<TopicProgress>>(into.row.progress, {}) }
-        return oldVersions[l]?.progress ?? (l === t.level ? { ...emptyProgress(), ...json<Partial<TopicProgress>>(t.row.progress, {}) } : theirVersions[l]?.progress) ?? emptyProgress()
+        const mine = mineAt(l)
+        const theirs = theirsAt(l)
+        // Two copies of the same topic (same sections, as with a week downloaded on two devices): keep whichever you got further in.
+        if (mine && theirs && sectionsOf(contents[l]) === sectionsOf(myContent(l)) && sectionsOf(contents[l]) === sectionsOf(t.topic.contents[l])) return further(theirs) > further(mine) ? theirs : mine
+        return mine ?? theirs ?? emptyProgress()
       }
       // A finished level that gained sections opens again at the first new one.
       const reopen = (l: NoteLevel, p: TopicProgress): TopicProgress => {
@@ -761,6 +791,205 @@ export async function mergeWeeks(targetId: string, otherIds: string[], opts: { j
   }
   touchCourse(target.course_id)
   return { weekId: targetId, merged, added, cards, files }
+}
+
+// ---------------------------------------------------------------------------
+// Copies of the same course (two devices that each had it, synced together)
+
+/**
+ * A course file in this app's own data folder. Merging only ever moves or
+ * deletes those: a row pointing anywhere else (another data folder, say) is
+ * never touched on disk.
+ */
+function ownedFile(path: string): boolean {
+  const full = resolve(path)
+  return full.startsWith(resolve(paths.courses) + sep)
+}
+
+/** Weeks match across copies of a course by week number ("Week 3", "W3"), else by label. */
+function weekKey(label: string): string {
+  const bare = label.replace(/\s*\(\d+\)\s*$/, '')
+  const n = weekNumber(bare)
+  return n !== null ? `n${n}` : `l${normText(bare)}`
+}
+
+/** How much you've done in a course: finished topics count most, then sections reached and questions answered. */
+function studied(courseId: string): number {
+  return listTopics(courseId).reduce((n, t) => n + (t.progress.done ? 1e6 : 0) + t.progress.section * 100 + t.progress.answered + (t.status === 'ready' ? 1 : 0), 0)
+}
+
+/**
+ * Courses that are in the library more than once: the same course (by module
+ * code, or by name without codes and punctuation) with the same material in
+ * it, at least half of the smaller one's topics or one of the same files. This
+ * happens when two devices each had a course (one downloaded it from the
+ * marketplace, say) and were then synced together. Each group lists the copy to
+ * keep first: the one you've studied most.
+ */
+export function duplicateCourses(): { name: string; courseIds: string[] }[] {
+  const courses = getDb().prepare('SELECT id, name, module, created_at FROM courses ORDER BY created_at').all() as { id: string; name: string; module: string; created_at: string }[]
+  const titles = new Map(courses.map((c) => [c.id, listTopics(c.id).map((t) => t.content?.title ?? t.plan.title)]))
+  const files = new Map(
+    courses.map((c) => [
+      c.id,
+      new Set(
+        listFiles(c.id).map((f) => {
+          try {
+            return `${f.name}|${statSync(f.path).size}`
+          } catch {
+            return `${f.name}|?`
+          }
+        })
+      )
+    ])
+  )
+  const copies = (a: string, b: string) => {
+    const ta = titles.get(a)!
+    const tb = titles.get(b)!
+    const shared = ta.filter((x) => tb.some((y) => titleSimilarity(x, y) >= 0.8)).length
+    if (shared && shared >= Math.ceil(Math.min(ta.length, tb.length) / 2)) return true
+    return [...files.get(a)!].some((f) => !f.endsWith('|?') && files.get(b)!.has(f))
+  }
+  // Groups of copies (a copy of a copy is in the same group).
+  const group = new Map<string, string>()
+  const root = (id: string): string => (group.get(id) && group.get(id) !== id ? root(group.get(id)!) : id)
+  for (const [i, a] of courses.entries())
+    for (const b of courses.slice(i + 1))
+      if (root(a.id) !== root(b.id) && sameCourse(a, b) && copies(a.id, b.id)) group.set(root(b.id), root(a.id))
+  const groups = new Map<string, string[]>()
+  for (const c of courses) groups.set(root(c.id), [...(groups.get(root(c.id)) ?? []), c.id])
+  const name = new Map(courses.map((c) => [c.id, c.name]))
+  const made = new Map(courses.map((c) => [c.id, c.created_at]))
+  return [...groups.values()]
+    .filter((ids) => ids.length > 1)
+    .map((ids) => {
+      const sorted = [...ids].sort((x, y) => studied(y) - studied(x) || made.get(x)!.localeCompare(made.get(y)!))
+      // The name with a module code in it, if either has one.
+      const best = [...ids].sort((x, y) => Number(/\([A-Z]{2,}\d{3,}\)/.test(name.get(y)!)) - Number(/\([A-Z]{2,}\d{3,}\)/.test(name.get(x)!)))[0]
+      return { name: name.get(best)!, courseIds: sorted }
+    })
+}
+
+/**
+ * Moves a week (its topics, files, deck and notes) into another course, as
+ * that course's last week, renumbering its topics to match.
+ */
+function moveWeekToCourse(weekId: string, courseId: string): void {
+  const d = getDb()
+  const w = weekRow(weekId)
+  if (w.course_id === courseId) return
+  const c = courseRow(courseId)
+  const position = (d.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS n FROM weeks WHERE course_id = ?').get(courseId) as { n: number }).n
+  d.prepare('UPDATE weeks SET course_id = ?, position = ? WHERE id = ?').run(courseId, position, weekId)
+
+  // Files go in the course's folder; a name it already has gets a number, and the topics' plans follow.
+  const dir = join(courseDir(courseId), 'files')
+  mkdirSync(dir, { recursive: true })
+  const taken = new Set(listFiles(courseId).filter((f) => f.week_id !== weekId).map((f) => f.name.toLowerCase()))
+  const renamed = new Map<string, string>()
+  for (const f of d.prepare('SELECT id, name, path FROM course_files WHERE week_id = ?').all(weekId) as { id: string; name: string; path: string }[]) {
+    let name = f.name
+    for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${basename(f.name, extname(f.name))} (${n})${extname(f.name)}`
+    taken.add(name.toLowerCase())
+    const dest = join(dir, name)
+    if (existsSync(f.path) && f.path !== dest) {
+      // Only the app's own copy is ever moved; a file anywhere else is copied and left where it is.
+      if (!ownedFile(f.path)) copyFileSync(f.path, dest)
+      else
+        try {
+          renameSync(f.path, dest)
+        } catch {
+          copyFileSync(f.path, dest)
+          rmSync(f.path, { force: true })
+        }
+    }
+    d.prepare('UPDATE course_files SET course_id = ?, name = ?, path = ? WHERE id = ?').run(courseId, name, dest, f.id)
+    if (name !== f.name) renamed.set(f.name, name)
+  }
+
+  // Topics: the course's, keyed by the week's new place (w5t2), plans pointing at renamed files.
+  for (const t of d.prepare('SELECT id, key, plan FROM topics WHERE week_id = ?').all(weekId) as { id: string; key: string; plan: string }[]) {
+    const key = `w${position + 1}t${t.key.match(/t(\d+)$/)?.[1] ?? '1'}`
+    const plan = json<OutlineTopic | null>(t.plan, null)
+    if (plan) {
+      plan.id = key
+      plan.sources = (plan.sources ?? []).map((s) => ({ ...s, file: renamed.get(s.file) ?? s.file }))
+    }
+    d.prepare('UPDATE topics SET course_id = ?, key = ?, plan = ? WHERE id = ?').run(courseId, key, plan ? JSON.stringify(plan) : t.plan, t.id)
+  }
+
+  // Its deck goes in the course's deck folder, under the course's name; its notes in the course's notes.
+  if (deckExists(w.deck_id)) repo.updateDeck(w.deck_id, { name: weekDeckName(c.name, w.label), folder_id: deckFolder(courseId) })
+  const folder = weekNoteFolder(weekId)
+  for (const t of d.prepare('SELECT note_id FROM topics WHERE week_id = ? AND note_id IS NOT NULL').all(weekId) as { note_id: string }[]) {
+    try {
+      repo.updateNote(t.note_id, { folder_id: folder })
+    } catch {
+      /* the note was deleted */
+    }
+  }
+}
+
+/** Removes a folder (and the folders in it) if nothing is left in any of them. */
+function removeIfEmpty(folderId: string | null): void {
+  if (!folderId) return
+  const d = getDb()
+  const kids = (d.prepare('SELECT id FROM folders WHERE parent_id = ?').all(folderId) as { id: string }[]).map((r) => r.id)
+  for (const k of kids) removeIfEmpty(k)
+  const used =
+    d.prepare('SELECT 1 FROM folders WHERE parent_id = ?').get(folderId) ||
+    d.prepare('SELECT 1 FROM notes WHERE folder_id = ?').get(folderId) ||
+    d.prepare('SELECT 1 FROM decks WHERE folder_id = ?').get(folderId)
+  if (!used) repo.deleteFolder(folderId)
+}
+
+/**
+ * Merges copies of a course into `targetId`: each of their weeks moves over,
+ * and one that's the same week (by number) as a week already there merges into
+ * it (mergeWeeks: nothing dropped, repeats taken out, the furthest progress and
+ * the most-reviewed cards kept). The copies are then removed. Returns which
+ * weeks merged into which (for the marketplace's bookkeeping).
+ */
+export async function mergeCourses(targetId: string, otherIds: string[]): Promise<{ courseId: string; weeksMerged: number; weeksMoved: number; mergedWeeks: [string, string][] }> {
+  const d = getDb()
+  const target = courseRow(targetId)
+  const others = [...new Set(otherIds)].filter((id) => id !== targetId).map(courseRow)
+  if (!others.length) throw new Error('Pick another course to merge into this one.')
+  for (const c of [target, ...others]) {
+    if (d.prepare("SELECT 1 FROM weeks WHERE course_id = ? AND status = 'planning'").get(c.id)) throw new Error(`A week of ${c.name} is still being planned. Merge when that's done.`)
+    if (d.prepare("SELECT 1 FROM topics WHERE course_id = ? AND status = 'writing'").get(c.id)) throw new Error(`A topic in ${c.name} is still being written. Merge when that's done.`)
+  }
+  const mergedWeeks: [string, string][] = []
+  let moved = 0
+  for (const other of others) {
+    for (const ow of d.prepare('SELECT * FROM weeks WHERE course_id = ? ORDER BY position').all(other.id) as WeekRow[]) {
+      const match = (d.prepare('SELECT * FROM weeks WHERE course_id = ? ORDER BY position').all(targetId) as WeekRow[]).find((w) => weekKey(w.label) === weekKey(ow.label))
+      moveWeekToCourse(ow.id, targetId)
+      if (match) {
+        await mergeWeeks(match.id, [ow.id])
+        mergedWeeks.push([match.id, ow.id])
+      } else {
+        moved++
+        for (const t of d.prepare("SELECT id FROM topics WHERE week_id = ? AND status = 'ready'").all(ow.id) as { id: string }[]) await syncTopicNote(t.id).catch(() => null)
+      }
+    }
+    // What the course itself says, where the one kept doesn't say it.
+    const keep = courseRow(targetId)
+    if (!keep.note && other.note) setCourseNote(targetId, other.note)
+    if (!keep.exam_date && other.exam_date) d.prepare('UPDATE courses SET exam_date = ? WHERE id = ?').run(other.exam_date, targetId)
+    if (!keep.module && other.module) d.prepare('UPDATE courses SET module = ? WHERE id = ?').run(other.module, targetId)
+    // An old course-wide deck still in use stays, in the kept course's folder.
+    if (deckExists(other.deck_id) && d.prepare('SELECT 1 FROM cards WHERE deck_id = ?').get(other.deck_id)) {
+      repo.updateDeck(other.deck_id, { name: `${keep.name} · Other cards`, folder_id: deckFolder(targetId) })
+      d.prepare('UPDATE courses SET deck_id = NULL WHERE id = ?').run(other.id)
+    }
+    // Everything has moved out: the copy goes, and its folders if they're empty.
+    const folders = [other.note_folder_id ?? null, other.deck_folder_id ?? null]
+    deleteCourse(other.id, true)
+    for (const f of folders) removeIfEmpty(f)
+  }
+  touchCourse(targetId)
+  return { courseId: targetId, weeksMerged: mergedWeeks.length, weeksMoved: moved, mergedWeeks }
 }
 
 export async function addFiles(weekId: string, files: string[]): Promise<CourseFile[]> {

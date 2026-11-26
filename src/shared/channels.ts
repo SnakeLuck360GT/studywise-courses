@@ -60,6 +60,8 @@ export const CHANNELS = [
   'courses.renameWeek',
   'courses.deleteWeek',
   'courses.mergeWeeks',
+  'courses.duplicates',
+  'courses.mergeCourses',
   'courses.addFiles',
   'courses.removeFile',
   'courses.openFile',

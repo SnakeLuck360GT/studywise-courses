@@ -433,6 +433,15 @@ export const handlers = {
       market.recordWeeksMerged(i.weekId, i.otherIds)
       return r
     }),
+    /** Courses that are in the library more than once (e.g. two devices that each had them, synced together), the copy to keep first. */
+    duplicates: h(none, () => course.duplicateCourses()),
+    /** Merge copies of a course into one: weeks move over, the same week merges (nothing dropped), the copies go. */
+    mergeCourses: h(z.object({ courseId: id, otherIds: z.array(id).min(1).max(30) }), async (i) => {
+      const r = await course.mergeCourses(i.courseId, i.otherIds)
+      for (const [into, gone] of r.mergedWeeks) market.recordWeeksMerged(into, [gone])
+      market.recordCoursesMerged(i.courseId, i.otherIds)
+      return r
+    }),
     addFiles: h(z.object({ weekId: id, files: z.array(z.string()).min(1).max(200) }), (i) => course.addFiles(i.weekId, i.files)),
     removeFile: h(z.object({ fileId: id }), (i) => course.removeFile(i.fileId)),
     // Opens the course's copy of a file in its default app, or shows it in Explorer/Finder.

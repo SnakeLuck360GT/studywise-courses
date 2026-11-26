@@ -12,8 +12,8 @@ import { OfflineButton } from './Offline'
 
 const LINKS: { label: string; route: Route; match: Route['name'][]; key: string }[] = [
   { label: 'Home', route: { name: 'home' }, match: ['home'], key: '⌘1' },
-  // The marketplace opens from the Courses page (or g k), so Courses stays lit while you're in it.
-  { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic', 'weektest', 'market'], key: 'g c' },
+  { label: 'Marketplace', route: { name: 'market' }, match: ['market'], key: 'g k' },
+  { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic', 'weektest'], key: 'g c' },
   { label: 'Decks', route: { name: 'decks' }, match: ['decks', 'deck', 'flashcards', 'learn'], key: '⌘2' },
   { label: 'Notes', route: { name: 'notes' }, match: ['notes'], key: '⌘3' },
   { label: 'Settings', route: { name: 'settings' }, match: ['settings'], key: '⌘,' }
@@ -35,8 +35,12 @@ export function GooNav() {
   const blobs = useRef<(HTMLDivElement | null)[]>([])
   const [hovering, setHovering] = useState(false)
   const [open, setOpen] = useState(false)
-  // Where the links go: centred in the window, nudged into the free gap, or folded into the menu.
-  const [fit, setFit] = useState<{ left: number | null; collapsed: boolean }>({ left: null, collapsed: false })
+  // Where the links go: centred in the window, nudged into the free gap, beside the logo without its
+  // name (compact), or folded into the menu.
+  const [fit, setFit] = useState<{ left: number | null; collapsed: boolean; compact: boolean }>({ left: null, collapsed: false, compact: false })
+  const brandTextRef = useRef<HTMLSpanElement>(null)
+  /** The app's name beside the logo, with its gap: the room hiding it makes. */
+  const brandTextW = useRef(0)
   const activeIdx = LINKS.findIndex((l) => l.match.includes(route.name))
 
   const place = useCallback((el: HTMLElement | null) => {
@@ -78,17 +82,27 @@ export function GooNav() {
     const GAP = 16
     const measure = () => {
       const box = nav.getBoundingClientRect()
-      const leftEdge = brand.getBoundingClientRect().right - box.left + GAP
+      // The app's name is measured while it shows; once hidden, the width it had is used.
+      const text = brandTextRef.current
+      const shown = !!text && text.offsetWidth > 0
+      if (shown) brandTextW.current = text.offsetWidth + 8
+      const brandRight = brand.getBoundingClientRect().right - box.left + GAP
+      const leftCompact = brandRight - (shown ? brandTextW.current : 0)
+      const leftFull = leftCompact + brandTextW.current
       // The menu button only shows when collapsed; measure as if it weren't there.
       const menuW = menuBtnRef.current?.offsetWidth ? menuBtnRef.current.offsetWidth + 12 : 0
       const rightEdge = tools.getBoundingClientRect().left - box.left + menuW - GAP
       const w = links.offsetWidth
       const centred = box.width / 2 - w / 2
-      let next: { left: number | null; collapsed: boolean }
-      if (centred >= leftEdge && centred + w <= rightEdge) next = { left: null, collapsed: false }
-      else if (rightEdge - leftEdge >= w) next = { left: Math.round(leftEdge + (rightEdge - leftEdge - w) / 2), collapsed: false }
-      else next = { left: null, collapsed: true }
-      setFit((f) => (f.left === next.left && f.collapsed === next.collapsed ? f : next))
+      const placeAt = (leftEdge: number, compact: boolean): { left: number | null; collapsed: boolean; compact: boolean } | null =>
+        centred >= leftEdge && centred + w <= rightEdge
+          ? { left: null, collapsed: false, compact }
+          : rightEdge - leftEdge >= w
+            ? { left: Math.round(leftEdge + (rightEdge - leftEdge - w) / 2), collapsed: false, compact }
+            : null
+      // With the app's name if there's room; then without it, before folding the links into the menu.
+      const next = placeAt(leftFull, false) ?? placeAt(leftCompact, true) ?? { left: null, collapsed: true, compact: false }
+      setFit((f) => (f.left === next.left && f.collapsed === next.collapsed && f.compact === next.compact ? f : next))
       if (!next.collapsed) setOpen(false)
       placeActive()
     }
@@ -141,7 +155,9 @@ export function GooNav() {
         )}
         <button onClick={() => navTo({ name: 'home' })} className="no-drag flex items-center gap-2 pr-2">
           <Logo />
-          <span className="hidden text-[0.95rem] font-semibold tracking-[-0.01em] whitespace-nowrap sm:inline">Studywise Courses</span>
+          <span ref={brandTextRef} className={cx('hidden text-[0.95rem] font-semibold tracking-[-0.01em] whitespace-nowrap', !fit.compact && 'sm:inline')}>
+            Studywise Courses
+          </span>
         </button>
         </div>
 

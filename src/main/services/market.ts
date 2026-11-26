@@ -477,6 +477,12 @@ export function recordAdded(remoteWeekId: string, weekId: string, mine: boolean,
  * week that wasn't published takes over one of the others' published copy, so
  * publishing it updates that one; it counts as changed, so it goes up again.
  */
+/** Copies of a course were merged into `targetId`: marketplace courses that went into a copy go into it now. */
+export function recordCoursesMerged(targetId: string, otherIds: string[]): void {
+  const gone = new Set(otherIds)
+  setSetting(LINKS_SETTING, Object.fromEntries(Object.entries(links()).map(([market, course]) => [market, gone.has(course) ? targetId : course])))
+}
+
 export function recordWeeksMerged(targetId: string, otherIds: string[]): void {
   const gone = new Set(otherIds)
   setSetting(ADDED_SETTING, Object.fromEntries(Object.entries(added()).map(([remote, a]) => [remote, gone.has(a.weekId) ? { ...a, weekId: targetId } : a])))

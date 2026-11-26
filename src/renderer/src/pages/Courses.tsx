@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { GraduationCap, Plus, FileText, X, Upload, Download, Store } from 'lucide-react'
+import { GraduationCap, Plus, FileText, X, Upload, Download, Store, Copy, Merge } from 'lucide-react'
+import { confirmDialog } from '../lib/dialogs'
 import { importSharedWeek } from '../lib/weekShare'
 import { IS_MOBILE } from '../lib/platform'
 import type { CourseFocus, CourseSummary } from '@shared/course'
@@ -11,6 +12,55 @@ import { offerMarketWeek } from '../lib/market'
 import { Shell, PageTitle } from '../components/Shell'
 import { PrivatePill, VisibilityField, type Visibility } from '../components/Visibility'
 import { Button, Card, Empty, Field, Input, Modal, Pill, ProgressBar, Textarea } from '../components/ui'
+
+/**
+ * Courses that are in the library more than once (two devices that each had
+ * them, synced together): one click makes each one course again.
+ */
+function DuplicateCourses() {
+  const version = useStore((s) => s.version)
+  const [groups, setGroups] = useState<{ name: string; courseIds: string[] }[]>([])
+  const [busy, setBusy] = useState(false)
+  useEffect(() => void api.courses.duplicates().then(setGroups).catch(() => setGroups([])), [version])
+  if (!groups.length) return null
+  const extra = groups.reduce((n, g) => n + g.courseIds.length - 1, 0)
+  const merge = async () => {
+    const ok = await confirmDialog(
+      groups.length === 1 ? `Merge the copies of ${groups[0].name}?` : `Merge the copies of these ${groups.length} courses?`,
+      'These courses are here more than once, usually because two devices each had them (one downloaded them from the marketplace, say) before they were synced together. Each becomes one course again: every week, topic, depth, question and flashcard from every copy is kept, only repeats are taken out, and you keep whichever copy you got further in, with your card reviews. The extra copies are removed, on your other synced devices too.',
+      { confirmText: 'Merge copies' }
+    )
+    if (!ok) return
+    setBusy(true)
+    let done = 0
+    try {
+      for (const g of groups) {
+        await api.courses.mergeCourses({ courseId: g.courseIds[0], otherIds: g.courseIds.slice(1) })
+        done++
+      }
+      toast(done === 1 ? `${groups[0].name} is one course again.` : `${done} courses are one course each again.`, 'good')
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setBusy(false)
+      useStore.getState().bump()
+    }
+  }
+  return (
+    <div className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-[0.92rem]">
+      <Copy className="size-4 shrink-0 text-warn" />
+      <span className="min-w-0 flex-1">
+        <span className="font-semibold">{extra === 1 ? 'A course is here twice' : `${extra} courses are here more than once`}</span>
+        <span className="text-muted">
+          : {groups.map((g) => `${g.name}${g.courseIds.length > 2 ? ` (${g.courseIds.length} copies)` : ''}`).join(', ')}. Merge them back into one each, keeping everything and your progress.
+        </span>
+      </span>
+      <Button size="sm" loading={busy} onClick={merge}>
+        <Merge className="size-4" /> Merge copies
+      </Button>
+    </div>
+  )
+}
 
 export function Courses() {
   const go = useStore((s) => s.go)
@@ -41,6 +91,7 @@ export function Courses() {
           ? 'Your courses from Studywise on your computer. Learn each topic in short sections, with flashcards and questions as you go.'
           : 'Make a course for a module, then add each week’s slides, transcripts and readings as you go. Claude splits every week into topics and teaches each one in short sections, with questions as you go.'}
       </PageTitle>
+      <DuplicateCourses />
       {courses && courses.length === 0 && (
         <Empty icon={<GraduationCap className="size-8" />} title="No courses yet">
           {IS_MOBILE ? (

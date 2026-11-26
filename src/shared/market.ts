@@ -242,6 +242,8 @@ const bareName = (s: string) =>
   s
     .replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')
     .toLowerCase()
+    // "Languages & Paradigms" is "Languages and Paradigms" (as the marketplace matches them).
+    .replace(/\s*&\s*/g, ' and ')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()
 
