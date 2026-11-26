@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { SlidersHorizontal, Sparkles, Play, Layers, MoreHorizontal, Pencil, Trash2, Plus, ChevronRight, Download, BellOff, CalendarDays, Scissors, StickyNote, Store, Globe, Lock, Copy, Merge } from 'lucide-react'
+import { SlidersHorizontal, Sparkles, Play, Layers, MoreHorizontal, Pencil, Trash2, Plus, ChevronRight, Download, BellOff, CalendarDays, Scissors, StickyNote, Store, Globe, Lock, Copy, Merge, BookOpen, X } from 'lucide-react'
 import { mergeDuplicateWeeks, offerPlan, writeTopics } from '../lib/courseFlows'
 import { duplicateWeekGroups } from '@shared/weekMerge'
 import { importSharedWeek } from '../lib/weekShare'
 import { declinedMarketWeek, marketMatches, offerMarketWeek, publishAllToMarket, setCourseVisibility } from '../lib/market'
 import { TrimCardsModal } from '../components/TrimCards'
-import { examPhase, revisionMaxGapDays, sortWeeks, type CourseFocus, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
+import { READING_WEEK, asReadingWeek, examPhase, isReadingWeek, missingReadingWeek, nextWeekLabel, revisionMaxGapDays, sortWeeks, weekNumber, type CourseFocus, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
 import { CourseFocusPicker, focusText } from '../components/CourseFocus'
 import { useStore, toast } from '../lib/store'
 import { api, errorText } from '../lib/api'
@@ -13,7 +13,7 @@ import { askText, confirmDialog } from '../lib/dialogs'
 import { Shell, PageTitle } from '../components/Shell'
 import { PrivatePill, VisibilityField, type Visibility } from '../components/Visibility'
 import { IS_MOBILE } from '../lib/platform'
-import { Button, Field, Input, Menu, MenuItem, Modal, Pill, ProgressBar, Segmented, Textarea } from '../components/ui'
+import { Button, Field, Input, Menu, MenuItem, Modal, Pill, ProgressBar, Segmented, Textarea, Toggle } from '../components/ui'
 import { FileDrop } from './Courses'
 import { runningJob } from './Week'
 import { DeckSettings } from './Deck'
@@ -193,6 +193,7 @@ export function CoursePage({ id }: { id: string }) {
           </Button>
         </div>
       ))}
+      <MissingReadingWeek c={c} onAdded={() => void load()} />
       {c.weeks.length > 0 && (
         <ul className="divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
           {sortWeeks(c.weeks, order).map((w) => (
@@ -248,7 +249,7 @@ export function CoursePage({ id }: { id: string }) {
       {adding && (
         <AddWeekModal
           course={c}
-          defaultLabel={`Week ${c.weeks.length + 1}`}
+          defaultLabel={nextWeekLabel(c.weeks)}
           onClose={() => setAdding(false)}
           onDone={() => {
             setAdding(false)
@@ -436,7 +437,8 @@ function useWeekOrder(): [WeekOrder, (o: WeekOrder) => void] {
 /** Blank weeks (no topics) that someone has already published on the marketplace. */
 function useMadeWeeks(c: CourseFull | null): Set<string> {
   const [made, setMade] = useState<Set<string>>(new Set())
-  const blank = (c?.weeks ?? []).filter((w) => !w.topics.length && w.status !== 'planning' && !declinedMarketWeek(w.id)).map((w) => w.id)
+  // A reading week is meant to be empty: nobody's published one to offer.
+  const blank = (c?.weeks ?? []).filter((w) => !w.topics.length && w.status !== 'planning' && !isReadingWeek(w.label) && !declinedMarketWeek(w.id)).map((w) => w.id)
   const key = blank.join(',')
   useEffect(() => {
     let live = true
@@ -456,6 +458,7 @@ function WeekRow({ c, w, made }: { c: CourseFull; w: WeekFull; made: boolean }) 
   const writing = w.topics.filter((t) => t.status === 'writing' || runningJob(jobs, 'course_topic', 'topicId', t.id)).length
   const ready = w.topics.filter((t) => t.status === 'ready').length
   const done = w.topics.filter((t) => t.progress.done).length
+  const reading = isReadingWeek(w.label)
   const status = planning
     ? { text: 'Planning…', tone: 'accent' as const }
     : w.status === 'error'
@@ -463,7 +466,9 @@ function WeekRow({ c, w, made }: { c: CourseFull; w: WeekFull; made: boolean }) 
       : writing
         ? { text: `Writing ${writing}…`, tone: 'accent' as const }
         : !w.topics.length
-          ? { text: w.files.length ? 'Not planned' : 'No files', tone: 'muted' as const }
+          ? reading
+            ? null
+            : { text: w.files.length ? 'Not planned' : 'No files', tone: 'muted' as const }
           : done === w.topics.length
             ? { text: 'Done', tone: 'good' as const }
             : ready < w.topics.length
@@ -471,7 +476,7 @@ function WeekRow({ c, w, made }: { c: CourseFull; w: WeekFull; made: boolean }) 
               : null
   const facts = [
     w.topics.length ? `${w.topics.length} topic${w.topics.length === 1 ? '' : 's'}${done ? ` · ${done} done` : ''}` : null,
-    `${w.files.length} file${w.files.length === 1 ? '' : 's'}`,
+    reading && !w.files.length && !w.topics.length ? 'No lectures this week' : `${w.files.length} file${w.files.length === 1 ? '' : 's'}`,
     w.card_count ? `${w.card_count} flashcard${w.card_count === 1 ? '' : 's'}` : null
   ].filter(Boolean)
   return (
@@ -491,6 +496,13 @@ function WeekRow({ c, w, made }: { c: CourseFull; w: WeekFull; made: boolean }) 
               </span>
             )}
             {w.private && !c.private && !IS_MOBILE && <PrivatePill title="Private: this week never goes on the marketplace. Make it public from the week’s ⋯ menu." />}
+            {reading && (
+              <span className="shrink-0" title="Reading week: no lectures. Add files if you have readings, or rename it from the week’s ⋯ menu.">
+                <Pill tone="good">
+                  <BookOpen className="size-3" /> Reading week
+                </Pill>
+              </span>
+            )}
             {status && (
               <Pill tone={status.tone === 'muted' ? 'neutral' : status.tone}>{status.text}</Pill>
             )}
@@ -517,11 +529,17 @@ function AddWeekModal({ course, defaultLabel, onClose, onDone }: { course: Cours
   const [visibility, setVisibility] = useState<Visibility>(course.private ? 'private' : 'public')
   const [files, setFiles] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
+  // Week 6 is usually reading week: offered whenever the name says week 6.
+  const [reading, setReading] = useState(false)
+  const canBeReading = weekNumber(label) === READING_WEEK || isReadingWeek(label)
+  const markReading = (reading && canBeReading) || isReadingWeek(label)
   const create = async () => {
     setBusy(true)
     try {
-      const w = await api.courses.addWeek({ courseId, label: label.trim(), files, private: visibility === 'private' })
+      const w = await api.courses.addWeek({ courseId, label: markReading ? asReadingWeek(label) : label.trim(), files, private: visibility === 'private' })
       onDone()
+      // A reading week has nothing to plan or look for, unless you gave it files.
+      if (markReading && !files.length) return toast(`Added ${asReadingWeek(label)}. Add files to it any time if you have readings.`, 'good')
       // Files are added, not planned: ask first (that checks the marketplace too).
       if (files.length) await offerPlan(w, { added: files.length })
       // No files yet: has someone already made this week?
@@ -552,11 +570,72 @@ function AddWeekModal({ course, defaultLabel, onClose, onDone }: { course: Cours
         <Field label="Name">
           <Input autoFocus value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Week 3, Reading week, Revision…" />
         </Field>
-        <Field label="Files" hint="This week’s slides, lecture transcripts and readings. Once they’re added you’re asked whether to plan the week’s topics now.">
+        {canBeReading && !isReadingWeek(label) && (
+          <div className="-mt-1 rounded-xl border border-line bg-surface-2/60 px-4 py-3">
+            <Toggle checked={reading} onChange={setReading} label={<span className="font-semibold">This is reading week</span>} />
+            <p className="mt-1 text-[0.84rem] text-muted">No lectures this week. It’s added as “{asReadingWeek(label)}” with nothing to plan, and you can still add readings to it.</p>
+          </div>
+        )}
+        <Field label="Files" hint={markReading ? 'Optional: any readings for the week. Add them and you’re asked whether to plan topics from them.' : 'This week’s slides, lecture transcripts and readings. Once they’re added you’re asked whether to plan the week’s topics now.'}>
           <FileDrop list={files} setList={setFiles} />
         </Field>
         {!IS_MOBILE && <VisibilityField what="week" value={visibility} onChange={setVisibility} lockedBy={course.private ? course.name : undefined} />}
       </div>
     </Modal>
+  )
+}
+
+const NO_READING_KEY = 'sw.noReadingWeek'
+
+/**
+ * A course with weeks after week 6 but no week 6: usually reading week, never
+ * added. Offers to add it as one, or to stop asking for this course.
+ */
+function MissingReadingWeek({ c, onAdded }: { c: CourseFull; onAdded: () => void }) {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return (JSON.parse(localStorage.getItem(NO_READING_KEY) ?? '[]') as string[]).includes(c.id)
+    } catch {
+      return false
+    }
+  })
+  const [busy, setBusy] = useState(false)
+  if (dismissed || !missingReadingWeek(c.weeks)) return null
+  const label = asReadingWeek(`Week ${READING_WEEK}`)
+  const add = async () => {
+    setBusy(true)
+    try {
+      await api.courses.addWeek({ courseId: c.id, label, files: [], private: c.private })
+      toast(`Added ${label}`, 'good')
+      onAdded()
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const dismiss = () => {
+    try {
+      const ids = JSON.parse(localStorage.getItem(NO_READING_KEY) ?? '[]') as string[]
+      localStorage.setItem(NO_READING_KEY, JSON.stringify([...ids, c.id]))
+    } catch {
+      /* storage unavailable: hidden until you leave the page */
+    }
+    setDismissed(true)
+  }
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 text-[0.92rem]">
+      <BookOpen className="size-4 shrink-0 text-good" />
+      <span className="min-w-0 flex-1">
+        <span className="font-semibold">There’s no Week {READING_WEEK}.</span>
+        <span className="text-muted"> Was it reading week? Add it as one so the weeks line up.</span>
+      </span>
+      <Button size="sm" loading={busy} onClick={() => void add()}>
+        <Plus className="size-4" /> Add {label}
+      </Button>
+      <Button size="icon" variant="ghost" onClick={dismiss} aria-label="Don’t ask for this course" title="Don’t ask for this course">
+        <X className="size-4" />
+      </Button>
+    </div>
   )
 }

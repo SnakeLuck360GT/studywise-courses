@@ -362,6 +362,30 @@ export function weekNumber(label: string): number | null {
   return m ? Number(m[1] ?? m[0]) : null
 }
 
+/**
+ * Reading week: most terms have one, usually week 6, with no lectures. It's a
+ * week like any other, marked in its label ("Week 6 · Reading week"), so it
+ * keeps its place in the order, syncs, and goes in a shared week as it is.
+ */
+export const READING_WEEK = 6
+export const isReadingWeek = (label: string): boolean => /\breading\s*week\b/i.test(label)
+/** "Week 6" → "Week 6 · Reading week" (a label that already says so is left alone). */
+export const asReadingWeek = (label: string): string => (isReadingWeek(label) ? label.trim() : `${label.trim() || `Week ${READING_WEEK}`} · Reading week`)
+/** "Week 6 · Reading week" → "Week 6": what it's called once it isn't one. */
+export const notReadingWeek = (label: string): string => label.replace(/\s*[·:\-–—(]*\s*reading\s*week\s*\)?\s*/i, ' ').trim() || `Week ${READING_WEEK}`
+
+/** The course has weeks after week 6 but no week 6: probably its reading week, never added. */
+export function missingReadingWeek(weeks: { label: string }[]): boolean {
+  const nums = weeks.map((w) => weekNumber(w.label))
+  return !nums.includes(READING_WEEK) && nums.some((n) => n !== null && n > READING_WEEK)
+}
+
+/** What to call the next week added: one after the highest week number so far. */
+export function nextWeekLabel(weeks: { label: string }[]): string {
+  const top = Math.max(0, ...weeks.map((w) => weekNumber(w.label) ?? 0))
+  return `Week ${Math.max(top, weeks.length) + 1}`
+}
+
 /** Week 1 first, or the latest week first. */
 export type WeekOrder = 'asc' | 'desc'
 

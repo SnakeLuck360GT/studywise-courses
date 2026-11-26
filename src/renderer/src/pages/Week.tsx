@@ -33,9 +33,10 @@ import {
   X,
   Zap,
   FilePlus2,
-  Merge
+  Merge,
+  BookOpen
 } from 'lucide-react'
-import { NOTE_LEVEL_INFO, NOTE_LEVELS, WEEK_TEST_INFO, unreviewedSections, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
+import { NOTE_LEVEL_INFO, NOTE_LEVELS, READING_WEEK, WEEK_TEST_INFO, asReadingWeek, isReadingWeek, notReadingWeek, unreviewedSections, weekNumber, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
 import { mergeWeekWith, offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics, writeWeekTest } from '../lib/courseFlows'
 import { planUsageText, type JobInfo } from '@shared/types'
 import { shareWeek } from '../lib/weekShare'
@@ -117,8 +118,11 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
   // The end-of-week test being written (on its own, or straight after planning).
   const testJob = runningJob(jobs, 'course_week_test', 'weekId', w.id)
   const canWriteTest = !IS_MOBILE && !planning && !testJob && (w.files.length > 0 || written.length > 0)
+  // Reading week (usually week 6): no lectures, so nothing to plan or look for unless it gets files.
+  const reading = isReadingWeek(w.label)
+  const canBeReading = reading || weekNumber(w.label) === READING_WEEK
   // A blank week someone has already published: offered on the page.
-  const blank = !w.topics.length && !planning
+  const blank = !w.topics.length && !planning && !reading
   const [made, setMade] = useState<MarketMatch[]>([])
   useEffect(() => {
     setMade([])
@@ -171,6 +175,12 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
   const rename = async () => {
     const label = await askText('Rename week', { initial: w.label, confirmText: 'Rename' })
     if (label) await api.courses.renameWeek({ weekId: w.id, label }).then(reload)
+  }
+  const toggleReading = async () => {
+    const label = reading ? notReadingWeek(w.label) : asReadingWeek(w.label)
+    await api.courses.renameWeek({ weekId: w.id, label })
+    toast(reading ? `${label} is a normal week again` : `${label}: no lectures, nothing to plan`, 'good')
+    reload()
   }
   const del = async () => {
     if (!(await confirmDialog(`Delete ${w.label}?`, 'Its files, topics and their recall cards go.', { confirmText: 'Delete week', danger: true }))) return
@@ -290,6 +300,11 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
                   <MenuItem icon={<Pencil className="size-4" />} onClick={() => (close(), void rename())}>
                     Rename week
                   </MenuItem>
+                  {canBeReading && (
+                    <MenuItem icon={<BookOpen className="size-4" />} onClick={() => (close(), void toggleReading())}>
+                      {reading ? 'Not a reading week' : 'Mark as reading week'}
+                    </MenuItem>
+                  )}
                   {c.weeks.length > 1 && (
                     <MenuItem icon={<Merge className="size-4" />} onClick={() => (close(), void mergeWeekWith(c, w).then((ok) => ok && reload()))}>
                       Merge another week into this one…
@@ -409,10 +424,22 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
               </Button>
             </div>
           )}
-          {!planning && !w.topics.length && w.status !== 'error' && (
-            <p className="rounded-xl border border-dashed border-line px-5 py-6 text-center text-[0.92rem] text-muted">
-              {w.files.length ? 'Plan this week to split its files into topics you learn in short sections.' : 'Add this week’s files, then plan its topics.'}
-            </p>
+          {!planning && !w.topics.length && w.status !== 'error' && reading && !w.files.length ? (
+            <div className="flex items-start gap-3 rounded-xl border border-good/30 bg-good-soft px-5 py-4">
+              <BookOpen className="mt-0.5 size-5 shrink-0 text-good" />
+              <div className="text-[0.92rem]">
+                <div className="font-semibold">Reading week</div>
+                <div className="text-muted">No lectures this week, so there’s nothing to plan. A good time to catch up on earlier weeks. If you have readings, add them below and plan topics from them.</div>
+              </div>
+            </div>
+          ) : (
+            !planning &&
+            !w.topics.length &&
+            w.status !== 'error' && (
+              <p className="rounded-xl border border-dashed border-line px-5 py-6 text-center text-[0.92rem] text-muted">
+                {w.files.length ? 'Plan this week to split its files into topics you learn in short sections.' : 'Add this week’s files, then plan its topics.'}
+              </p>
+            )
           )}
         </section>
 
@@ -486,7 +513,7 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
           ) : (
             <button onClick={addFiles} className="flex w-full flex-col items-center gap-1 rounded-xl border-2 border-dashed border-line px-5 py-6 text-center transition-colors hover:border-accent">
               <Upload className="size-5 text-muted" />
-              <span className="font-semibold">Add {w.label}’s files</span>
+              <span className="font-semibold">{reading ? 'Add readings (optional)' : `Add ${w.label}’s files`}</span>
               <span className="text-[0.88rem] text-muted">Slides, lecture transcripts, readings or pictures, or a week a friend shared. Click, or drop them anywhere on this page.</span>
             </button>
           )}
