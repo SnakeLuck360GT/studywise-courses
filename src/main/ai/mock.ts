@@ -276,6 +276,34 @@ export function mockResponse(task: TaskId, mode: string, vars: Record<string, un
       const out = { remove }
       return { text: JSON.stringify(out), structured: out }
     }
+    case 'course_combine': {
+      // Matches B sections to A sections by heading words, and combines them as A's notes plus B's paragraphs A doesn't have.
+      const words = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(' ').filter((w) => w.length > 2))
+      const alike = (x: string, y: string) => {
+        const a = words(x)
+        const b = words(y)
+        const both = [...a].filter((w) => b.has(w)).length
+        return a.size && b.size ? both / Math.min(a.size, b.size) >= 0.5 : false
+      }
+      const parts: { part: number; sections: { a: number; b: number[]; notes: string }[] }[] = []
+      for (const block of v('parts').split(/^### Part /m).slice(1)) {
+        const part = Number(block.match(/^(\d+)/)?.[1])
+        const secs = [...block.matchAll(/^#### ([AB])(\d+)\. (.*)\n([\s\S]*?)(?=^#### [AB]\d+\. |^Version [AB]:|(?![\s\S]))/gm)].map((m) => ({ side: m[1], n: Number(m[2]), heading: m[3], notes: m[4].trim() }))
+        const as = secs.filter((s) => s.side === 'A')
+        const out = new Map<number, { a: number; b: number[]; notes: string }>()
+        for (const b of secs.filter((s) => s.side === 'B')) {
+          const a = as.find((x) => alike(x.heading, b.heading))
+          if (!a) continue
+          const cur = out.get(a.n) ?? { a: a.n, b: [], notes: a.notes }
+          const have = cur.notes.split(/\n\s*\n/).map((p) => p.trim())
+          const extra = b.notes.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p && !have.includes(p))
+          out.set(a.n, { a: a.n, b: [...cur.b, b.n], notes: [cur.notes, ...extra].join('\n\n') })
+        }
+        parts.push({ part, sections: [...out.values()] })
+      }
+      const out = { parts }
+      return { text: JSON.stringify(out), structured: out }
+    }
     case 'course_dedupe': {
       // Pairs questions that use the same words in any order, keeping the longer, like the real thing would for a reworded repeat.
       const same: { group: number; a: number; b: number; keep: 'a' | 'b' }[] = []

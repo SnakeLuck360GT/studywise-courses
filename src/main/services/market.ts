@@ -12,7 +12,7 @@ import { getDb } from '../db'
 import { getCourse as localCourse, setCoursePrivate, setWeekPrivate, weekFingerprint } from './course'
 import { importWeek, weekContentHash, weekZip } from './weekShare'
 import { mergeWeekZips } from './weekMerge'
-import { askAboutRepeats, questionCollector } from './questionDedupe'
+import { planMerge } from './contentCombine'
 import { startJob, type JobContext } from '../jobs'
 import { AUTO_PUBLISH_SETTING, IMPORTED_WEEKS_SETTING, planAdd, type AddMode, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketMatch, type MarketSort, type MarketStatus, type MarketWeek, type PublishableWeek } from '@shared/market'
 
@@ -392,18 +392,19 @@ async function mergeInto(remoteIds: string[], extra: Buffer[] = [], ctx?: JobCon
   }
   ctx?.progress('Merging')
   const all = [...copies, ...extra]
-  // First a dry run to see which questions get combined, then the AI checks them for repeats in other words.
-  ctx?.live?.({ stage: 'Checking for questions that ask the same thing…', percent: 0.62 })
-  const collect = questionCollector()
-  const dry = await mergeWeekZips(all, { judge: collect.judge, dryRun: true })
-  const check = await askAboutRepeats(collect.groups, {
-    module: dry.json.course.module || dry.json.course.name,
+  // Dry runs first: the AI combines the copies' notes (everything from each, repeats taken out), then spots
+  // questions that ask the same thing in other words. Without AI it merges as before.
+  ctx?.live?.({ stage: 'Combining notes…', percent: 0.62 })
+  const first = await mergeWeekZips(all, { dryRun: true })
+  const plan = await planMerge((planner, judge) => mergeWeekZips(all, { planner, judge, dryRun: true }), {
+    module: first.json.course.module || first.json.course.name,
     signal: ctx?.signal,
-    onProgress: (done, total) => total > 1 && ctx?.live?.({ stage: `Checking for repeated questions (${done + 1} of ${total})…`, percent: 0.62 + (done / total) * 0.1 })
+    onProgress: (stage) => ctx?.live?.({ stage, percent: 0.66 })
   })
-  if (check.pairs) ctx?.progress(`${check.pairs} question${check.pairs === 1 ? '' : 's'} asked the same thing; the fuller one of each is kept`)
+  if (plan.combined) ctx?.progress(`Combined the notes of ${plan.combined} section${plan.combined === 1 ? '' : 's'} both copies had`)
+  if (plan.repeats) ctx?.progress(`${plan.repeats} question${plan.repeats === 1 ? '' : 's'} asked the same thing; the fuller one of each is kept`)
   ctx?.live?.({ stage: 'Merging topics, questions and flashcards…', percent: 0.74 })
-  const { bytes } = await mergeWeekZips(all, { judge: check.judge })
+  const { bytes } = await mergeWeekZips(all, { judge: plan.judge, planner: plan.planner })
   ctx?.progress('Uploading the merged week')
   ctx?.live?.({ stage: 'Uploading the merged week…', percent: 0.8 })
   try {

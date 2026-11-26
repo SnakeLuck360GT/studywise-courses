@@ -1,14 +1,18 @@
 // Merging duplicate weeks (two people's "Week 3", or the same week added twice)
-// into one, without AI and without dropping anything: the result is the larger
-// set, with repeats taken out.
+// into one without dropping anything: the result is the larger set, with
+// repeats taken out.
 //
 //   topics    matched by title (or, failing that, by their section headings);
 //             a matched pair becomes one topic, unmatched ones are added
 //   levels    each level of detail (standard, quick, …) merges with the same
 //             level; a level only one side has is kept as it is
-//   sections  matched by heading; a matched pair becomes one section whose
-//             notes are the first's plus every paragraph of the second's that
-//             isn't already there; sections only one side has are added at
+//   sections  with AI (ContentPlanner, src/main/services/contentCombine.ts):
+//             sections covering the same material are paired whatever their
+//             headings, and their notes combined into one, keeping every detail
+//             of both and taking out only repeated or reworded points. Without
+//             AI (or where its answer fails the checks): matched by heading, the
+//             first's notes plus every paragraph of the second's that isn't
+//             already there. Either way, sections only one side has are added at
 //             the end (so places you've reached in a topic stay where they were)
 //   questions, flashcards, test questions: the union, without repeats
 //   recall cards (the week's deck): the union, a card whose front is already
@@ -193,17 +197,65 @@ export function mergeSection(a: TopicSection, b: TopicSection): TopicSection {
   }
 }
 
+/**
+ * How the AI combined two copies of one level of a topic (see
+ * src/main/services/contentCombine.ts): which of A's sections each of B's
+ * covers the same material as (by index), and the combined notes for those A
+ * sections (everything from both, repeats taken out). B sections in no entry
+ * are added as their own sections.
+ */
+export interface ContentPlan {
+  sections: { a: number; b: number[]; notes: string }[]
+}
+
+/**
+ * Merging runs twice, like the question judge: once with `seen`, to collect
+ * every pair of topic copies that need combining, then, after the AI has
+ * combined them, with `plan`, which gives its answer for a pair (or null to
+ * merge it without AI).
+ */
+export interface ContentPlanner {
+  seen?: (a: TopicContent, b: TopicContent, level: string) => void
+  plan?: (a: TopicContent, b: TopicContent) => ContentPlan | null
+}
+let planner: ContentPlanner | null = null
+
+/** Runs `fn` (a merge) with `p` combining topic copies' notes. */
+export function withContentPlanner<T>(p: ContentPlanner | null, fn: () => T): T {
+  const prev = planner
+  planner = p
+  try {
+    return fn()
+  } finally {
+    planner = prev
+  }
+}
+
+/** A level of a topic as the planner knows it: its title, headings and notes, ignoring case, punctuation and Markdown. */
+const contentKey = (c: TopicContent) => `${normText(c.title)}\u0001${c.sections.map((s) => `${normText(s.heading)}\u0002${normText(s.notes)}`).join('\u0003')}`
+/** The pair of copies an AI plan answers for. */
+export const contentPairKey = (a: TopicContent, b: TopicContent) => `${contentKey(a)}\u0004${contentKey(b)}`
+
 /** One level of a topic merged with the same level of its duplicate. */
-export function mergeContent(a: TopicContent, b: TopicContent): TopicContent {
+export function mergeContent(a: TopicContent, b: TopicContent, level = 'standard'): TopicContent {
   const sections = a.sections.map((s) => ({ ...s }))
+  // The same copy twice needs nothing combined.
+  const differs = contentKey(a) !== contentKey(b)
+  if (differs) planner?.seen?.(a, b, level)
+  const plan = differs ? (planner?.plan?.(a, b) ?? null) : null
+  // With the AI's plan, its pairing (even across different headings); without, sections pair by heading.
+  const planned = new Map<number, number>()
+  if (plan) for (const e of plan.sections) for (const j of e.b) planned.set(j, e.a)
   const used = new Set<number>()
-  for (const s of b.sections) {
-    const i = sections.findIndex((x, j) => !used.has(j) && j < a.sections.length && sameSection(x, s))
-    if (i >= 0) {
+  b.sections.forEach((s, j) => {
+    const i = plan ? (planned.get(j) ?? -1) : sections.findIndex((x, k) => !used.has(k) && k < a.sections.length && sameSection(x, s))
+    if (i >= 0 && i < a.sections.length) {
       used.add(i)
       sections[i] = mergeSection(sections[i], s)
     } else sections.push({ ...s })
-  }
+  })
+  // The combined notes: everything from both, written together.
+  if (plan) for (const e of plan.sections) if (sections[e.a]) sections[e.a] = { ...sections[e.a], notes: e.notes }
   return { title: a.title, goal: a.goal || b.goal, sections, check: mergeQuestions(a.check ?? [], b.check ?? []) }
 }
 
@@ -267,7 +319,7 @@ export function matchTopics(into: MergeTopic[], from: MergeTopic[]): Map<number,
 /** Every level either topic is written at, levels both have merged. */
 export function mergeLevels(a: Record<string, TopicContent>, b: Record<string, TopicContent>): Record<string, TopicContent> {
   const out: Record<string, TopicContent> = { ...a }
-  for (const [level, c] of Object.entries(b)) out[level] = out[level] ? mergeContent(out[level], c) : c
+  for (const [level, c] of Object.entries(b)) out[level] = out[level] ? mergeContent(out[level], c, level) : c
   return out
 }
 

@@ -23,6 +23,7 @@ export const TASKS = [
   'course_update',
   'course_extend',
   'course_dedupe',
+  'course_combine',
   'course_week_test'
 ] as const
 export type TaskId = (typeof TASKS)[number]
@@ -247,6 +248,15 @@ export const TASK_INFO: Record<TaskId, TaskInfo> = {
     variables: ['module', 'groups'],
     streams: false,
     long: false
+  },
+  course_combine: {
+    id: 'course_combine',
+    label: 'Course: combine two copies of a topic’s notes when merging weeks',
+    defaultModel: 'sonnet',
+    modes: ['json'],
+    variables: ['module', 'parts'],
+    streams: false,
+    long: true
   },
   course_extend: {
     id: 'course_extend',

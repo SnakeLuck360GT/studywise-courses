@@ -66,10 +66,23 @@ import {
   type WeekTestLevel,
   type WeekTestQuestion
 } from '@shared/course'
-import { cardKey, matchTopics, mergeLevels, mergePlan, normText, remapContent, titleSimilarity, withQuestionJudge, type MergeTopic, type QuestionJudge } from '@shared/weekMerge'
+import {
+  cardKey,
+  matchTopics,
+  mergeLevels,
+  mergePlan,
+  normText,
+  remapContent,
+  titleSimilarity,
+  withContentPlanner,
+  withQuestionJudge,
+  type ContentPlanner,
+  type MergeTopic,
+  type QuestionJudge
+} from '@shared/weekMerge'
 import { sameCourse } from '@shared/market'
 import { weekNumber } from '@shared/course'
-import { askAboutRepeats, questionCollector } from './questionDedupe'
+import { planMerge } from './contentCombine'
 
 // A course is a run of weeks. Each week has its own files; its topics are
 // planned from those files only, knowing what earlier weeks already cover.
@@ -589,34 +602,47 @@ function mergeTopicOf(r: TopicRow): MergeTopic {
 }
 
 /**
- * mergeWeeks, with the AI checking which questions from the different copies
- * ask the same thing in other words (see questionDedupe.ts). A dry run first
- * finds every list of questions the merge combines; nothing changes until the
- * real merge.
+ * mergeWeeks, with the AI combining the copies' notes (sections that cover the
+ * same material become one, with everything from both and only repeats taken
+ * out) and spotting questions that ask the same thing in other words (see
+ * contentCombine.ts). Dry runs first find what the merge combines; nothing
+ * changes until the real merge. Without AI it merges as before.
  */
-export async function mergeWeeksChecked(targetId: string, otherIds: string[], signal?: AbortSignal): Promise<Awaited<ReturnType<typeof mergeWeeks>> & { repeats: number; checked: boolean }> {
+export async function mergeWeeksChecked(
+  targetId: string,
+  otherIds: string[],
+  signal?: AbortSignal,
+  onProgress?: (stage: string) => void
+): Promise<Awaited<ReturnType<typeof mergeWeeks>> & { repeats: number; combined: number; checked: boolean }> {
   const { target, others } = mergeableWeeks(targetId, otherIds)
   const load = (weekId: string) => (getDb().prepare('SELECT * FROM topics WHERE week_id = ? ORDER BY position').all(weekId) as TopicRow[]).map(mergeTopicOf)
-  const collect = questionCollector()
-  withQuestionJudge(collect.judge, () => {
-    const topics = load(target.id)
-    for (const w of others) {
-      const theirs = load(w.id)
-      const m = matchTopics(topics, theirs)
-      theirs.forEach((t, j) => {
-        const i = m.get(j)
-        if (i === undefined) topics.push(t)
-        else topics[i] = { ...topics[i], contents: mergeLevels(topics[i].contents, t.contents) }
+  // What the real merge does to the topics, without saving anything.
+  const simulate = (p: ContentPlanner, j: QuestionJudge | null) =>
+    withContentPlanner(p, () =>
+      withQuestionJudge(j, () => {
+        const topics = load(target.id)
+        for (const w of others) {
+          const theirs = load(w.id)
+          const m = matchTopics(topics, theirs)
+          theirs.forEach((t, k) => {
+            const i = m.get(k)
+            if (i === undefined) topics.push(t)
+            else topics[i] = { ...topics[i], contents: mergeLevels(topics[i].contents, t.contents) }
+          })
+        }
       })
-    }
-  })
+    )
   const c = getCourse(target.course_id)
-  const check = await askAboutRepeats(collect.groups, { module: c.module || c.name, signal })
-  const r = await mergeWeeks(targetId, otherIds, { judge: check.judge })
-  return { ...r, repeats: check.pairs, checked: check.checked }
+  const plan = await planMerge(simulate, { module: c.module || c.name, signal, onProgress })
+  const r = await mergeWeeks(targetId, otherIds, { judge: plan.judge, planner: plan.planner })
+  return { ...r, repeats: plan.repeats, combined: plan.combined, checked: plan.checked }
 }
 
-export async function mergeWeeks(targetId: string, otherIds: string[], opts: { judge?: QuestionJudge | null } = {}): Promise<{ weekId: string; merged: number; added: number; cards: number; files: number }> {
+export async function mergeWeeks(
+  targetId: string,
+  otherIds: string[],
+  opts: { judge?: QuestionJudge | null; planner?: ContentPlanner | null } = {}
+): Promise<{ weekId: string; merged: number; added: number; cards: number; files: number }> {
   const d = getDb()
   const { target, others } = mergeableWeeks(targetId, otherIds)
   const deckId = ensureWeekDeck(targetId)
@@ -647,8 +673,8 @@ export async function mergeWeeks(targetId: string, otherIds: string[], opts: { j
     return { row: r, level, topic: { title: shown?.title ?? plan?.title ?? r.key, plan, contents } satisfies MergeTopic }
   }
 
-  // The judge (the AI check in mergeWeeksChecked) says which questions are repeats in other words.
-  withQuestionJudge(opts.judge ?? null, () => {
+  // The planner and the judge (the AI steps in mergeWeeksChecked) combine the copies' notes and say which questions are repeats in other words.
+  withContentPlanner(opts.planner ?? null, () => withQuestionJudge(opts.judge ?? null, () => {
   for (const w of others) {
     // Files: the same bytes as one already in the target week are that file.
     const fileMap = new Map<string, string>()
@@ -783,7 +809,7 @@ export async function mergeWeeks(targetId: string, otherIds: string[], opts: { j
     }
     deleteWeek(w.id)
   }
-  })
+  }))
 
   for (const id of touched) {
     refreshDormancy(id)
@@ -950,7 +976,11 @@ function removeIfEmpty(folderId: string | null): void {
  * the most-reviewed cards kept). The copies are then removed. Returns which
  * weeks merged into which (for the marketplace's bookkeeping).
  */
-export async function mergeCourses(targetId: string, otherIds: string[]): Promise<{ courseId: string; weeksMerged: number; weeksMoved: number; mergedWeeks: [string, string][] }> {
+export async function mergeCourses(
+  targetId: string,
+  otherIds: string[],
+  onProgress?: (stage: string) => void
+): Promise<{ courseId: string; weeksMerged: number; weeksMoved: number; mergedWeeks: [string, string][] }> {
   const d = getDb()
   const target = courseRow(targetId)
   const others = [...new Set(otherIds)].filter((id) => id !== targetId).map(courseRow)
@@ -966,7 +996,8 @@ export async function mergeCourses(targetId: string, otherIds: string[]): Promis
       const match = (d.prepare('SELECT * FROM weeks WHERE course_id = ? ORDER BY position').all(targetId) as WeekRow[]).find((w) => weekKey(w.label) === weekKey(ow.label))
       moveWeekToCourse(ow.id, targetId)
       if (match) {
-        await mergeWeeks(match.id, [ow.id])
+        // With the AI combining the copies' notes and spotting reworded questions (without AI, as before).
+        await mergeWeeksChecked(match.id, [ow.id], undefined, (stage) => onProgress?.(`${ow.label}: ${stage}`))
         mergedWeeks.push([match.id, ow.id])
       } else {
         moved++

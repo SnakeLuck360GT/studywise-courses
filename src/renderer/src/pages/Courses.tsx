@@ -27,7 +27,7 @@ function DuplicateCourses() {
   const merge = async () => {
     const ok = await confirmDialog(
       groups.length === 1 ? `Merge the copies of ${groups[0].name}?` : `Merge the copies of these ${groups.length} courses?`,
-      'These courses are here more than once, usually because two devices each had them (one downloaded them from the marketplace, say) before they were synced together. Each becomes one course again: every week, topic, depth, question and flashcard from every copy is kept, only repeats are taken out, and you keep whichever copy you got further in, with your card reviews. The extra copies are removed, on your other synced devices too.',
+      'These courses are here more than once, usually because two devices each had them (one downloaded them from the marketplace, say) before they were synced together. Each becomes one course again: every week, topic, depth, question and flashcard from every copy is kept. Where copies differ, Claude combines their notes, keeping every detail and taking out only what is repeated or reworded, and questions asked twice in other words are kept once. You keep whichever copy you got further in, with your card reviews. This can take a few minutes. The extra copies are removed, on your other synced devices too.',
       { confirmText: 'Merge copies' }
     )
     if (!ok) return

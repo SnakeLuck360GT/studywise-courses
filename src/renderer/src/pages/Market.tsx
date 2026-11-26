@@ -216,7 +216,7 @@ function WeekGroupRow({ g, copies, onAdded, onRemoved }: { g: WeekGroup<MarketWe
   const merge = async () => {
     const ok = await confirmDialog(
       `Merge the ${g.versions.length} versions of ${g.title} into one?`,
-      `Everything from each version goes into one week: every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, and every file. Only repeats are taken out; nothing is shortened or summarised, and nothing is generated. The merged week replaces these ${g.versions.length} versions on the marketplace for everyone, credited to ${authorsText(authors)}. Copies people already added stay as they are.`,
+      `Everything from each version goes into one week: every topic, every depth (quick, standard, in-depth…), every section, question and flashcard, and every file. Where versions cover the same thing, Claude combines their notes: every detail, example and explanation is kept and only repeated or reworded points are taken out, so nothing is shortened or summarised. Questions asked twice in other words are kept once; every other question stays. The merged week replaces these ${g.versions.length} versions on the marketplace for everyone, credited to ${authorsText(authors)}. Copies people already added stay as they are.`,
       { confirmText: 'Merge into one' }
     )
     if (!ok) return

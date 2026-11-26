@@ -10,7 +10,7 @@ import {
   GeneratedCards
 } from '@shared/questions'
 import type { TaskId } from '@shared/tasks'
-import { CourseOutline, AiTopic, CourseMarkOut, CourseTrimOut, CourseUpdate, CourseExtendOut, CourseDedupeOut, AiWeekTest } from '@shared/course'
+import { CourseOutline, AiTopic, CourseMarkOut, CourseTrimOut, CourseUpdate, CourseExtendOut, CourseDedupeOut, CourseCombineOut, AiWeekTest } from '@shared/course'
 
 /** Output schemas for json presets. These live in code and are always appended,
  * so editing a prompt can change behaviour but never break parsing. */
@@ -32,6 +32,7 @@ export const TASK_SCHEMAS: Partial<Record<TaskId, z.ZodType>> = {
   course_update: CourseUpdate,
   course_extend: CourseExtendOut,
   course_dedupe: CourseDedupeOut,
+  course_combine: CourseCombineOut,
   course_week_test: AiWeekTest
 }
 

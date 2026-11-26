@@ -208,6 +208,8 @@ When a card is genuinely unsure, keep it.
     // Only the questions' text is sent. Nothing is rewritten: the app keeps one question of each pair, word for word.
     system: `Two people made the same week of a course, and their copies are being merged into one. You compare their practice questions and find the ones that are repeats. You never rewrite, shorten or combine questions: you only say which ones are the same. You reply with JSON only.
 
+Every question you don't pair is kept, so the merged week keeps every question that isn't a duplicate or a reworded copy of another. Only pair true repeats: when in doubt, leave both in.
+
 Each group has list A (one copy) and list B (the other), from the same part of a topic.
 
 Pair a B question with an A question only when ALL of these are true:
@@ -226,6 +228,34 @@ Each A question pairs with at most one B question, and each B with at most one A
     user_template: `My course: {{module}}. Which of these questions are repeats?
 
 {{groups}}`,
+    is_default: true
+  },
+  {
+    builtin_key: 'course.combine',
+    task: 'course_combine',
+    name: 'Combine two copies of a topic’s notes when merging weeks',
+    output_mode: 'json',
+    // Only the two copies' notes are sent. The app checks nothing was lost (length, code, maths, images) and keeps the plain merge if it was.
+    system: `Two people wrote notes for the same topic of a course, and their copies are being merged into one. You combine their notes into one set that has everything from both, with only the repeats taken out. You reply with JSON only.
+
+Each part is one topic at one level of detail (standard, quick revision, in-depth, or "explain it like I'm 12"), with version A's sections and version B's sections, numbered.
+
+== WHAT TO DO ==
+1. Match sections. For each B section, decide whether it covers the same material as one of A's sections: the same idea, process or concept, even under a different heading or in different words. Several B sections can go with the same A section. A B section about something A doesn't cover goes with none (the app adds it as its own section, so leave it out of your answer).
+2. Combine each matched group into one section's notes, written for A's section:
+   - Start from A's notes and keep ALL of them: every fact, definition, step, example, number, formula, code, table, image, warning and explanation.
+   - Add everything from the B section(s) that A doesn't already have: extra facts, details, examples, edge cases, intuition, worked steps, formulas, code, caveats. Put each where it fits best in A's order, not just tacked on at the end.
+   - Remove only true repeats: the same point said twice, or the same point reworded. When both explain the same thing in different ways, keep the fuller, clearer explanation, and also keep anything the other adds (a second example, an analogy, a different angle that helps).
+   - Never summarise, shorten, simplify or drop detail. The combined notes keep the same depth of detail as the fuller of the two, plus whatever the other adds, so they're at least as long as the longer one.
+   - Keep the level of detail of the part (quick revision stays tight and to the point, in-depth stays thorough), but never at the cost of a point either version makes.
+   - Keep Markdown formatting, and copy maths ($…$, $$…$$), code blocks, tables and images (![…](…)) exactly as written.
+   - Don't invent anything: only what A or B says.
+3. Leave out A sections that no B section matches: they stay as they are.
+
+"parts": one entry per part, with "part" (its number) and "sections": one entry per matched group, with "a" (the A section's number), "b" (the numbers of the B sections combined into it) and "notes" (the combined notes, Markdown, without the heading). A part with nothing to combine has an empty "sections" list.`,
+    user_template: `My course: {{module}}. Combine these copies of my notes, keeping every detail and taking out only what's repeated:
+
+{{parts}}`,
     is_default: true
   },
   {

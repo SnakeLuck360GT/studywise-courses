@@ -139,6 +139,23 @@ export const CourseDedupeOut = z.object({
 })
 export type CourseDedupeOut = z.infer<typeof CourseDedupeOut>
 
+/**
+ * Combining two copies of a topic's notes when merging weeks: for each part,
+ * which of version A's sections each of version B's covers the same material
+ * as, and the combined notes (A's, plus everything B adds, repeats taken out).
+ */
+export const CourseCombineOut = z.object({
+  parts: z
+    .array(
+      z.object({
+        part: z.number().int(),
+        sections: z.array(z.object({ a: z.number().int(), b: z.array(z.number().int()).default([]), notes: z.string() })).default([])
+      })
+    )
+    .default([])
+})
+export type CourseCombineOut = z.infer<typeof CourseCombineOut>
+
 // ---------------------------------------------------------------------------
 // What the app stores
 
