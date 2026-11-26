@@ -7,9 +7,7 @@ import { runCommand, useCommands } from '../lib/commands'
 import { STUDY_TIME_EVENT, fmtDuration } from '../lib/studyTime'
 import { Shell } from '../components/Shell'
 import { Button, Kbd, cx } from '../components/ui'
-import { timeAgo } from '../components/PhoneSync'
-import { LAST_SESSION_SETTING, forgetSession, type LastSession } from '../lib/lastSession'
-import { Play, X } from 'lucide-react'
+import { ResumeCard, useResumable } from '../components/ResumeCard'
 
 type DeckRow = Deck & { card_count: number; due_count: number }
 type Overview = { activity: { date: string; count: number }[]; streak: number; today: number; week: number; next: (Card & { deck_name: string }) | null }
@@ -22,59 +20,6 @@ export function deckHue(name: string): number {
   for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0
   const hues = [222, 262, 190, 152, 28, 340, 205, 48]
   return hues[h % hues.length]
-}
-
-interface Resumable {
-  session: LastSession
-  kind: string
-  detail: string
-}
-
-/**
- * The study session you left partway through, if it's still there to go back
- * to: the topic still exists (and isn't finished), the deck still has cards
- * (still due, for a due review). One that's gone or done is forgotten.
- */
-function useResumable(version: number): [Resumable | null, () => void] {
-  const [r, setR] = useState<Resumable | null>(null)
-  useEffect(() => {
-    let alive = true
-    void (async () => {
-      const s = (await api.settings.all().catch(() => ({}) as Record<string, unknown>))[LAST_SESSION_SETTING] as LastSession | null | undefined
-      if (!s?.route) return alive && setR(null)
-      try {
-        const route = s.route
-        let title = s.title
-        let kind: string
-        let detail: string
-        if (route.name === 'topic') {
-          const t = await api.courses.topic({ id: route.id })
-          if (!t.content || (!route.test && t.progress.done)) throw new Error('done')
-          title = t.content.title
-          const total = route.test ? t.content.check.length : t.content.sections.length
-          kind = route.test ? 'Topic test' : 'Topic'
-          detail = route.test ? plural(total, 'question') : `Section ${Math.min(t.progress.section + 1, total)} of ${total}`
-        } else if (route.name === 'learn') {
-          title = (await api.decks.get({ id: route.deckId })).name
-          kind = 'Learn'
-          detail = route.cardIds?.length ? `${plural(route.cardIds.length, 'card')} picked` : 'A new set of questions on this deck'
-        } else {
-          const cards = route.courseId ? await api.courses.due({ courseId: route.courseId }) : route.mode === 'due' ? await api.decks.due({ id: route.deckId }) : await api.cards.list({ deckId: route.deckId })
-          if (!cards.length) throw new Error('done')
-          kind = 'Flashcards'
-          detail = route.mode === 'due' ? `${plural(cards.length, 'card')} due` : plural(cards.length, 'card')
-        }
-        if (alive) setR({ session: { ...s, title }, kind, detail })
-      } catch {
-        if (alive) setR(null)
-        void forgetSession()
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [version])
-  return [r, () => (setR(null), void forgetSession())]
 }
 
 export function Home() {
@@ -112,26 +57,7 @@ export function Home() {
 
   return (
     <Shell className="max-w-[1000px]">
-      {resumable && resume && (
-        <section className="pop-in mb-8 flex flex-wrap items-center gap-4 rounded-xl border border-accent/30 bg-accent-soft px-5 py-4">
-          <div className="grid size-11 shrink-0 place-items-center rounded-full bg-accent text-accent-ink">
-            <Play className="ml-0.5 size-5" fill="currentColor" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-[0.85rem] text-muted">Pick up where you left off · {resumable.kind}</div>
-            <div className="truncate text-[1.1rem] font-semibold tracking-[-0.01em]">{resumable.session.title}</div>
-            <div className="text-[0.88rem] text-muted">
-              {resumable.detail} · {timeAgo(resumable.session.at)}
-            </div>
-          </div>
-          <Button variant="primary" size="lg" onClick={resume}>
-            Continue <Kbd className="ml-1 border-white/30 text-white/80">↩</Kbd>
-          </Button>
-          <button onClick={dismissResumable} className="grid size-8 place-items-center rounded-lg text-muted hover:bg-surface hover:text-ink" aria-label="Dismiss" title="Forget this session">
-            <X className="size-4" />
-          </button>
-        </section>
-      )}
+      {resumable && resume && <ResumeCard r={resumable} onContinue={resume} onDismiss={dismissResumable} enterKey />}
       <section className="grid items-center gap-10 pt-2 pb-12 md:grid-cols-[1.1fr_1fr]">
         <div>
           <p className="text-[0.95rem] text-muted">{new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}</p>

@@ -226,7 +226,7 @@ export function App() {
     {
       'go.home': () => go({ name: 'home' }),
       'go.decks': () => go({ name: 'decks' }),
-      'go.courses': () => useStore.getState().goCourses(),
+      'go.courses': () => go({ name: 'courses' }),
       'go.market': () => go({ name: 'market' }),
       'go.notes': () => go({ name: 'notes', id: (useStore.getState().route as { id?: string }).id ?? null }),
       'go.jobs': () => go({ name: 'jobs' }),

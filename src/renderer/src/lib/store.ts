@@ -52,8 +52,6 @@ interface State {
   go: (r: Route) => void
   goBack: () => void
   goForward: () => void
-  /** The Courses tab: back to where you last were in it (a topic, week or course), or the list when you're already there. */
-  goCourses: () => void
 
   claude: ClaudeStatus | null
   setClaude: (s: ClaudeStatus) => void
@@ -106,34 +104,6 @@ const OFFLINE_HINT = 'Offline mode is on, so AI features are off. Turn it off wi
 
 let toastSeq = 0
 
-/** Pages that belong to the Courses tab. */
-const COURSE_ROUTES: Route['name'][] = ['courses', 'course', 'week', 'topic', 'weektest']
-const COURSES_PLACE_KEY = 'sw.coursesPlace'
-
-/** Where you were in Courses, so the tab takes you back there (also after a restart). */
-export function rememberCoursesPlace(r: Route): void {
-  if (!COURSE_ROUTES.includes(r.name)) return
-  // A topic is remembered without the section it was opened at, so coming back resumes your exact place.
-  if (r.name === 'topic' && 'section' in r) {
-    const { section: _s, ...rest } = r as Route & { section?: number }
-    r = rest as Route
-  }
-  try {
-    if (r.name === 'courses') localStorage.removeItem(COURSES_PLACE_KEY)
-    else localStorage.setItem(COURSES_PLACE_KEY, JSON.stringify(r))
-  } catch {
-    /* storage unavailable: the tab just opens the list */
-  }
-}
-function lastCoursesPlace(): Route | null {
-  try {
-    const r = JSON.parse(localStorage.getItem(COURSES_PLACE_KEY) ?? 'null') as Route | null
-    return r && COURSE_ROUTES.includes(r.name) ? r : null
-  } catch {
-    return null
-  }
-}
-
 export const useStore = create<State>((set, get) => ({
   route: { name: 'home' },
   back: [],
@@ -143,13 +113,7 @@ export const useStore = create<State>((set, get) => ({
     if (r.name === 'jobs') r = { name: 'settings', tab: 'jobs' }
     const cur = get().route
     if (JSON.stringify(cur) === JSON.stringify(r)) return
-    rememberCoursesPlace(r)
     set({ route: r, back: [...get().back.slice(-50), cur], forward: [] })
-  },
-  goCourses: () => {
-    const here = COURSE_ROUTES.includes(get().route.name)
-    const last = lastCoursesPlace()
-    get().go(!here && last ? last : { name: 'courses' })
   },
   goBack: () => {
     const b = get().back

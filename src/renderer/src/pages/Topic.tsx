@@ -19,7 +19,7 @@ import {
 } from '@shared/course'
 import type { Mark } from '@shared/questions'
 import type { Card } from '@shared/types'
-import { useStore, toast, rememberCoursesPlace } from '../lib/store'
+import { useStore, toast } from '../lib/store'
 import { useStudySession } from '../lib/lastSession'
 import { IS_MOBILE } from '../lib/platform'
 import { api, errorText, streamCall } from '../lib/api'
@@ -205,8 +205,6 @@ export function TopicPage({ id, section, test = false }: { id: string; section?:
     if (!topic || !steps.length) return
     if (steps[at]?.kind === 'summary') {
       sessions.delete(sessionKey)
-      // Done: the Courses tab goes back to the week rather than into a finished topic.
-      rememberCoursesPlace({ name: 'week', courseId: topic.course_id, weekId: topic.week_id })
       return
     }
     sessions.set(sessionKey, { content: contentKey.current, steps, at, slots, cards: cards.current, run: run.current })

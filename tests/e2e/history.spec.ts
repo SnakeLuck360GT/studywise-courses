@@ -28,9 +28,11 @@ const heading = () => win.getByRole('heading', { level: 1 })
 /** A press of the mouse's back (3) or forward (4) button, as the window sees it. */
 const side = (button: 3 | 4) =>
   win.evaluate((b) => {
+    // Tests are type-checked without the DOM's types.
+    const g = globalThis as unknown as { document: { body: { dispatchEvent: (e: unknown) => void } }; MouseEvent: new (type: string, init: object) => unknown }
     const opts = { button: b, bubbles: true, cancelable: true }
-    document.body.dispatchEvent(new MouseEvent('mousedown', opts))
-    document.body.dispatchEvent(new MouseEvent('mouseup', opts))
+    g.document.body.dispatchEvent(new g.MouseEvent('mousedown', opts))
+    g.document.body.dispatchEvent(new g.MouseEvent('mouseup', opts))
   }, button)
 /** What the main process sends for Windows' app-command. */
 const system = (dir: 'back' | 'forward') => app.evaluate(({ BrowserWindow }, d) => BrowserWindow.getAllWindows()[0].webContents.send('sw:event', { type: 'nav', dir: d }), dir)

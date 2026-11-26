@@ -10,6 +10,8 @@ import { api, errorText } from '../lib/api'
 import { canMergeNow, offerPlan } from '../lib/courseFlows'
 import { offerMarketWeek } from '../lib/market'
 import { Shell, PageTitle } from '../components/Shell'
+import { ResumeCard, useResumable } from '../components/ResumeCard'
+import { LAST_COURSE_SESSION_SETTING } from '../lib/lastSession'
 import { PrivatePill, VisibilityField, type Visibility } from '../components/Visibility'
 import { Button, Card, Empty, Field, Input, Modal, Pill, ProgressBar, Textarea } from '../components/ui'
 
@@ -69,6 +71,8 @@ export function Courses() {
   const openNew = useStore((s) => s.openNewCourse)
   const [courses, setCourses] = useState<CourseSummary[] | null>(null)
   useEffect(() => void api.courses.list().then(setCourses), [version])
+  // A topic (or a course's flashcards) you left partway through.
+  const [resumable, dismissResumable] = useResumable(version, LAST_COURSE_SESSION_SETTING)
 
   return (
     <Shell>
@@ -92,6 +96,7 @@ export function Courses() {
           ? 'Your courses from Studywise on your computer. Learn each topic in short sections, with flashcards and questions as you go.'
           : 'Make a course for a module, then add each week’s slides, transcripts and readings as you go. Claude splits every week into topics and teaches each one in short sections, with questions as you go.'}
       </PageTitle>
+      {resumable && <ResumeCard r={resumable} onContinue={() => go(resumable.session.route)} onDismiss={dismissResumable} />}
       <DuplicateCourses />
       {courses && courses.length === 0 && (
         <Empty icon={<GraduationCap className="size-8" />} title="No courses yet">
