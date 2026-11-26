@@ -37,6 +37,7 @@ import { JobDock } from './components/JobLive'
 import { CoursePage } from './pages/Course'
 import { WeekPage } from './pages/Week'
 import { IS_MOBILE } from './lib/platform'
+import { offerCloudSync } from './components/PhoneSync'
 import { MobileTopBar, MobileTabBar, MobileOnboarding, STUDY_ROUTES } from './components/MobileShell'
 
 const Learn = lazy(() => import('./pages/Learn').then((m) => ({ default: m.Learn })))
@@ -80,6 +81,8 @@ export function App() {
       useStore.getState().setJobs(await api.jobs.list())
       if (!s['onboarding.done']) setOnboarding(true)
       setReady(true)
+      // Connected to a marketplace and cloud sync not decided yet: offer it once, after things settle.
+      if (s['onboarding.done'] && !IS_MOBILE) setTimeout(() => void offerCloudSync(), 4000)
     })()
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const onMq = () => applyTheme((document.documentElement.dataset.theme as Theme) || 'system')

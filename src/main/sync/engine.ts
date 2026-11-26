@@ -282,6 +282,41 @@ export async function syncWith(db: SqlDb, peerId: string, transport: SyncTranspo
 }
 
 // ---------------------------------------------------------------------------
+// Syncing through the cloud (studywise-server)
+
+/** The cloud's peer id: every device's changes reach it, and rows it puts back after a restore carry it as their origin. */
+export const CLOUD_PEER = 'cloud'
+
+/**
+ * One sync with the cloud. Like syncWith with relay (changes that reached this
+ * device from a Wi‑Fi peer go up too, so they reach every device), but rows
+ * that came down from the cloud aren't sent back up: after each page pulled,
+ * if nothing else was written here meanwhile, what it logged counts as sent.
+ */
+export async function syncWithCloud(db: SqlDb, transport: SyncTransport): Promise<SyncResult> {
+  let peer = getPeer(db, CLOUD_PEER) ?? savePeer(db, { id: CLOUD_PEER, name: 'Cloud' })
+  let sent = 0
+  let received = 0
+  for (;;) {
+    const page = changesSince(db, peer.sent_seq, { skipOrigin: CLOUD_PEER })
+    if (page.changes.length || (!page.more && sent)) await transport.push(page.changes, !page.more)
+    sent += page.changes.length
+    peer = savePeer(db, { id: CLOUD_PEER, sent_seq: page.next })
+    if (!page.more) break
+  }
+  for (;;) {
+    const page = await transport.pull(peer.got_seq)
+    const before = maxSeq(db)
+    received += applyChanges(db, page.changes, { final: !page.more }).applied
+    const upToDate = peer.sent_seq >= before
+    peer = savePeer(db, { id: CLOUD_PEER, got_seq: page.next, ...(upToDate ? { sent_seq: maxSeq(db) } : {}) })
+    if (!page.more) break
+  }
+  savePeer(db, { id: CLOUD_PEER, last_sync: new Date().toISOString() })
+  return { sent, received }
+}
+
+// ---------------------------------------------------------------------------
 // Peers
 
 export interface Peer {

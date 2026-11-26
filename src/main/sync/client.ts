@@ -9,7 +9,7 @@ export interface HttpResponse {
   json(): Promise<unknown>
   bytes(): Promise<Uint8Array>
 }
-export type HttpFn = (req: { method: 'GET' | 'POST' | 'PUT'; url: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs?: number }) => Promise<HttpResponse>
+export type HttpFn = (req: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; url: string; headers?: Record<string, string>; body?: string | Uint8Array; timeoutMs?: number }) => Promise<HttpResponse>
 
 export const SYNC_PORT = 47821
 
@@ -31,11 +31,21 @@ export class SyncError extends Error {
   }
 }
 
+/** Who's syncing (sent to the cloud, which lists each account's devices), and how to word errors. */
+export interface SyncClientOptions {
+  device?: { id: string; name: string; kind: 'computer' | 'phone' }
+  /** The error when it can't be reached. */
+  unreachable?: string
+  /** "The computer", "The cloud": who answered with an error. */
+  who?: string
+}
+
 export class SyncClient {
   constructor(
     readonly base: string,
     private readonly http: HttpFn,
-    private token: string | null = null
+    private token: string | null = null,
+    private readonly opts: SyncClientOptions = {}
   ) {}
 
   private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = 30_000): Promise<T> {
@@ -49,10 +59,10 @@ export class SyncClient {
         timeoutMs
       })
     } catch (e) {
-      throw new SyncError(`Can’t reach your computer at ${this.base.replace(/^https?:\/\//, '')}. Check it’s on, Studywise is open with syncing turned on, and you’re on the same Wi‑Fi.`, 0)
+      throw new SyncError(this.opts.unreachable ?? `Can’t reach your computer at ${this.base.replace(/^https?:\/\//, '')}. Check it’s on, Studywise is open with syncing turned on, and you’re on the same Wi‑Fi.`, 0)
     }
     const data = (await res.json().catch(() => ({}))) as T & { error?: string }
-    if (res.status >= 400) throw new SyncError(data?.error ?? `The computer answered ${res.status}`, res.status)
+    if (res.status >= 400) throw new SyncError(data?.error ?? `${this.opts.who ?? 'The computer'} answered ${res.status}`, res.status)
     return data
   }
 
@@ -68,8 +78,8 @@ export class SyncClient {
 
   transport(): SyncTransport {
     return {
-      push: (changes: Change[], done = true) => this.call('POST', '/push', { changes, done }, 120_000),
-      pull: (since: number) => this.call<ChangePage>('POST', '/pull', { since }, 120_000)
+      push: (changes: Change[], done = true) => this.call('POST', '/push', { changes, done, ...(this.opts.device ? { device: this.opts.device } : {}) }, 120_000),
+      pull: (since: number) => this.call<ChangePage>('POST', '/pull', { since, ...(this.opts.device ? { device: this.opts.device } : {}) }, 120_000)
     }
   }
 

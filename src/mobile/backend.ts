@@ -229,6 +229,8 @@ export function installBackend(): void {
       pair: (i) => phone.pair(i.address, i.code),
       unpair: () => phone.unpair(),
       now: () => phone.syncNow(),
+      useCloud: (i) => phone.useCloud(i),
+      stopCloud: () => phone.stopCloud(),
       onStatus: (cb) => phone.onStatus(cb)
     },
     resetLibrary: async () => {

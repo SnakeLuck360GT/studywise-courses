@@ -30,6 +30,7 @@ import { paths } from './paths'
 import { getUsage } from './usage'
 import * as syncServer from './sync/server'
 import * as syncLink from './sync/link'
+import * as syncCloud from './sync/cloud'
 import {
   CardInput,
   CardFormat,
@@ -653,7 +654,15 @@ export const handlers = {
     linkStatus: h(none, () => syncLink.linkStatus()),
     link: h(z.object({ address: z.string().min(1).max(200), code: z.string().min(1).max(20) }), (i) => syncLink.link(i.address, i.code)),
     unlink: h(none, () => syncLink.unlink()),
-    linkNow: h(none, () => syncLink.syncNow())
+    linkNow: h(none, () => syncLink.syncNow()),
+    // Syncing and backing up through the cloud (the marketplace server).
+    cloudStatus: h(none, () => syncCloud.cloudStatus()),
+    cloudSet: h(z.object({ on: z.boolean() }), (i) => syncCloud.setCloud(i.on)),
+    cloudNow: h(none, () => syncCloud.syncNow()),
+    cloudInfo: h(none, () => syncCloud.cloudInfo()),
+    cloudDelete: h(none, () => syncCloud.deleteCloudCopy()),
+    /** For a paired phone (through /rpc): the cloud's address and key, so it syncs through the cloud too. */
+    cloudCredentials: h(none, () => syncCloud.cloudCredentials())
   },
 
   jobs: {

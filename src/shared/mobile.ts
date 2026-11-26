@@ -13,6 +13,8 @@ export interface PhoneSyncStatus {
   error: string | null
   /** Local changes not sent yet. */
   pending: number
+  /** Syncing through the cloud (the marketplace server) instead of with the computer; the computer is then only for AI. */
+  cloud: { on: boolean; server: string | null; lastSync: string | null }
 }
 
 export interface MobileApi {
@@ -24,6 +26,10 @@ export interface MobileApi {
     unpair(): Promise<PhoneSyncStatus>
     /** Sync now (also happens by itself). */
     now(): Promise<PhoneSyncStatus>
+    /** Sync through the cloud: with the address and key given, or the ones the paired computer uses. */
+    useCloud(input?: { url: string; key: string }): Promise<PhoneSyncStatus>
+    /** Back to syncing with the computer over Wi‑Fi. */
+    stopCloud(): Promise<PhoneSyncStatus>
     onStatus(cb: (s: PhoneSyncStatus) => void): () => void
   }
   /** Wipe the phone's copy of the library (it comes back on the next sync). */

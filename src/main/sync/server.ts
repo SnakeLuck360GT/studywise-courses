@@ -26,6 +26,7 @@ import * as repo from '../db/repo'
 import { paths } from '../paths'
 import { applyChanges, changesSince, deviceId, ensureBackfill, getPeer, listPeers, removePeer, savePeer, type SqlDb } from './engine'
 import { attachmentPath, courseFileOnDisk, localizeCoursePaths } from './files'
+import * as cloud from './cloud'
 import type { SyncDevice, SyncStatus } from '@shared/types'
 
 export const DEFAULT_PORT = 47821
@@ -71,7 +72,9 @@ const BLOCKED = new Set([
   'sync.unpair',
   'sync.link',
   'sync.unlink',
-  'sync.linkNow'
+  'sync.linkNow',
+  'sync.cloudSet',
+  'sync.cloudDelete'
 ])
 
 type RpcRunner = (channel: string, input: unknown, stream: (streamId: string, text: string) => void) => Promise<{ ok: boolean; data?: unknown; error?: string }>
@@ -101,7 +104,7 @@ export function configureSyncServer(opts: { rpc: RpcRunner; onSynced: (received:
 /** Called for every event the desktop window gets, so phones can follow along. */
 export function recordEvent(ev: unknown): void {
   const type = (ev as { type?: string })?.type
-  if (!type || ['menu', 'open-files', 'fullscreen', 'update', 'link'].includes(type)) return
+  if (!type || ['menu', 'open-files', 'fullscreen', 'update', 'link', 'cloud'].includes(type)) return
   events.push({ n: ++eventN, ev })
   if (events.length > 600) events.splice(0, events.length - 600)
   for (const w of waiting) w()
@@ -324,7 +327,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const b = await readJson<{ channel?: string; input?: unknown }>(req)
       const channel = String(b.channel ?? '')
       if (!runRpc || BLOCKED.has(channel)) return send(res, 200, { ok: false, error: 'That isn’t available from the phone.' })
-      return send(res, 200, await runRpc(channel, b.input, (streamId, text) => recordEvent({ type: 'ai:delta', streamId, text })))
+      // A phone syncing through the cloud: get its latest changes first, and put what this makes up there after.
+      const viaCloud = cloud.cloudStatus().on === true && !channel.startsWith('sync.')
+      if (viaCloud) await cloud.syncNow()
+      const out = await runRpc(channel, b.input, (streamId, text) => recordEvent({ type: 'ai:delta', streamId, text }))
+      if (viaCloud) await cloud.syncNow()
+      return send(res, 200, out)
     }
     if (route === 'GET /events') {
       const since = Number(url.searchParams.get('since') ?? -1)

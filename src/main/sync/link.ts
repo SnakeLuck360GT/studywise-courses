@@ -148,11 +148,17 @@ async function doSync(): Promise<LinkStatus> {
   return linkStatus()
 }
 
+async function syncFiles(c: SyncClient): Promise<boolean> {
+  filesLeft = await copyFiles(c)
+  return filesLeft === 0
+}
+
 /**
  * Copies the files the synced rows need: what's missing here comes from the
- * other computer, then what it's missing goes to it. True when nothing is left.
+ * other side (another computer, or the cloud), then what it's missing goes to
+ * it. Returns how many couldn't be copied this time.
  */
-async function syncFiles(c: SyncClient): Promise<boolean> {
+export async function copyFiles(c: SyncClient): Promise<number> {
   const d = db()
   const fileIds = (d.prepare('SELECT id FROM course_files').all() as { id: string }[]).map((r) => r.id)
   const images = referencedAttachments(d)
@@ -202,8 +208,7 @@ async function syncFiles(c: SyncClient): Promise<boolean> {
     if (!here(p)) continue
     if (!(await c.putFile(`studywise-file://attachments/${name}`, readFileSync(p)).catch(() => false))) left++
   }
-  filesLeft = left
-  return left === 0
+  return left
 }
 
 let timer: ReturnType<typeof setInterval> | null = null

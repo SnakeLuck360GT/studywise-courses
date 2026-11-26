@@ -1,5 +1,5 @@
 import type { StudywiseApi } from '../main/ipc'
-import type { JobInfo, ClaudeStatus, UsageLimits, LinkStatus } from '../shared/types'
+import type { JobInfo, ClaudeStatus, UsageLimits, LinkStatus, CloudStatus } from '../shared/types'
 import type { UpdateStatus } from '../shared/update'
 
 export type StudywiseEvent =
@@ -16,6 +16,8 @@ export type StudywiseEvent =
   | { type: 'sync'; received: number }
   /** The link to another computer changed state (syncing, synced, can't reach it). */
   | { type: 'link'; status: LinkStatus }
+  /** Cloud sync changed state (syncing, synced, can't reach the server). */
+  | { type: 'cloud'; status: CloudStatus }
 
 declare global {
   interface Window {

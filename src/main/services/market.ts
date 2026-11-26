@@ -40,6 +40,13 @@ export function marketStatus(): MarketStatus {
 
 const isReady = () => !!marketUrl() && !!getSecret(KEY_SETTING)
 
+/** The marketplace's address and key, for cloud sync (it uses the same account). */
+export function marketAuth(): { url: string; key: string } | null {
+  const url = marketUrl()
+  const key = getSecret(KEY_SETTING)
+  return url && key ? { url, key } : null
+}
+
 /** https only, except a server on this computer while developing. */
 export function cleanUrl(raw: string): string {
   let s = raw.trim()

@@ -7,7 +7,7 @@ import * as repo from '../main/db/repo'
 import { getDb } from '../main/db'
 import { onWrite, saveNow } from './db'
 import { SyncClient, SyncError, baseUrl } from '../main/sync/client'
-import { deviceId, ensureBackfill, getPeer, removePeer, syncWith, type SqlDb } from '../main/sync/engine'
+import { CLOUD_PEER, deviceId, ensureBackfill, getPeer, removePeer, syncWith, syncWithCloud, type SqlDb } from '../main/sync/engine'
 import { http } from './http'
 import { idb } from './idb'
 
@@ -21,6 +21,8 @@ const db = () => getDb() as unknown as SqlDb
 const TOKEN_KEY = 'secret.phone.token'
 const DESKTOP_KEY = 'phone.desktop'
 const UPLOADS_KEY = 'uploads'
+/** The cloud's address and key ({url, key}) when this phone syncs through it. */
+const CLOUD_KEY = 'secret.phone.cloud'
 
 let client: SyncClient | null = null
 let state: PhoneSyncStatus['state'] = 'idle'
@@ -31,6 +33,22 @@ const statusListeners = new Set<(s: PhoneSyncStatus) => void>()
 let emitEvent: (ev: unknown) => void = () => {}
 
 const desktop = () => repo.getSetting<Desktop | null>(DESKTOP_KEY, null)
+const cloudAuth = () => repo.getSetting<{ url: string; key: string } | null>(CLOUD_KEY, null)
+
+let cloud: SyncClient | null = null
+function cloudClient(): SyncClient | null {
+  const a = cloudAuth()
+  if (!a) return null
+  if (!cloud || cloud.base !== `${a.url}/api/cloud`)
+    cloud = new SyncClient(`${a.url}/api/cloud`, http, a.key, {
+      device: { id: deviceId(db()), name: deviceName(), kind: 'phone' },
+      unreachable: `Can’t reach ${a.url.replace(/^https?:\/\//, '')}. Your changes are kept on the phone and go up when you’re online.`,
+      who: 'The cloud'
+    })
+  return cloud
+}
+/** Something to sync with: the cloud, or the paired computer. */
+const canSync = () => !!cloudClient() || !!makeClient()
 
 function makeClient(): SyncClient | null {
   const d = desktop()
@@ -42,8 +60,12 @@ function makeClient(): SyncClient | null {
 
 export function status(): PhoneSyncStatus {
   const d = desktop()
+  const c = cloudAuth()
   let pending = 0
-  if (d) {
+  if (c) {
+    const peer = getPeer(db(), CLOUD_PEER)
+    pending = (db().prepare('SELECT COUNT(*) AS n FROM sync_log WHERE seq > ? AND origin != ?').get(peer?.sent_seq ?? 0, CLOUD_PEER) as { n: number }).n
+  } else if (d) {
     const peer = getPeer(db(), d.desktopId)
     pending = (db().prepare('SELECT COUNT(*) AS n FROM sync_log WHERE seq > ? AND origin = ?').get(peer?.sent_seq ?? 0, deviceId(db())) as { n: number }).n
   }
@@ -55,7 +77,8 @@ export function status(): PhoneSyncStatus {
     state,
     online,
     error: lastError,
-    pending
+    pending,
+    cloud: { on: !!c, server: c?.url ?? null, lastSync: c ? (getPeer(db(), CLOUD_PEER)?.last_sync ?? null) : null }
   }
 }
 
@@ -95,6 +118,48 @@ export async function pair(address: string, code: string): Promise<PhoneSyncStat
   return s
 }
 
+/**
+ * Sync through the cloud from now on: with the address and key given, or the
+ * ones the paired computer uses (it has to have cloud sync on). The computer
+ * stays paired for AI.
+ */
+export async function useCloud(input?: { url: string; key: string }): Promise<PhoneSyncStatus> {
+  let auth = input ? { url: input.url.trim().replace(/\/+$/, ''), key: input.key.trim() } : null
+  if (auth && !/^https?:\/\//i.test(auth.url)) auth.url = `https://${auth.url}`
+  if (!auth) {
+    const c = makeClient()
+    if (!c) throw new Error('Pair with your computer first, or type the cloud’s address and an API key.')
+    const r = await c.rpc('sync.cloudCredentials', null)
+    if (!r.ok) throw new Error(r.error ?? 'Your computer couldn’t say.')
+    if (!r.data) throw new Error('Turn on cloud sync on your computer first (Settings → Devices).')
+    auth = r.data as { url: string; key: string }
+  }
+  if (!auth.url || !auth.key) throw new Error('Type the cloud’s address and an API key.')
+  repo.setSetting(CLOUD_KEY, auth)
+  cloud = null
+  lastError = null
+  await saveNow()
+  const s = await syncNow()
+  if (s.error) {
+    repo.setSetting(CLOUD_KEY, null)
+    cloud = null
+    await saveNow()
+    throw new Error(s.error)
+  }
+  return s
+}
+
+/** Stop syncing through the cloud: back to syncing with the paired computer over Wi‑Fi. */
+export async function stopCloud(): Promise<PhoneSyncStatus> {
+  repo.setSetting(CLOUD_KEY, null)
+  removePeer(db(), CLOUD_PEER)
+  cloud = null
+  lastError = null
+  await saveNow()
+  changed()
+  return status()
+}
+
 export async function unpair(): Promise<PhoneSyncStatus> {
   const d = desktop()
   repo.setSetting(TOKEN_KEY, null)
@@ -114,22 +179,29 @@ export function syncNow(): Promise<PhoneSyncStatus> {
 }
 
 async function doSync(): Promise<PhoneSyncStatus> {
+  const cc = cloudClient()
   const c = makeClient()
   const d = desktop()
-  if (!c || !d) return status()
+  if (!cc && (!c || !d)) return status()
   state = 'syncing'
   changed()
   try {
     ensureBackfill(db())
-    const r = await syncWith(db(), d.desktopId, c.transport())
-    await uploadAttachments(c)
-    online = true
+    // Through the cloud when it's on (the computer is then only for AI), else with the computer.
+    const r = cc ? await syncWithCloud(db(), cc.transport()) : await syncWith(db(), d!.desktopId, c!.transport())
+    await uploadAttachments(cc ?? c!)
+    if (!cc) online = true
     lastError = null
     if (r.received) emitEvent({ type: 'sync', received: r.received })
     void prefetchFigures()
   } catch (e) {
-    online = false
-    lastError = e instanceof SyncError && e.status === 401 ? 'Your computer doesn’t recognise this phone any more. Unpair and pair again.' : (e as Error).message
+    if (!cc) online = false
+    lastError =
+      e instanceof SyncError && e.status === 401
+        ? cc
+          ? 'The cloud didn’t accept this phone’s key any more. Turn cloud sync off and on again.'
+          : 'Your computer doesn’t recognise this phone any more. Unpair and pair again.'
+        : (e as Error).message
   } finally {
     state = lastError ? 'error' : 'idle'
     await saveNow()
@@ -146,8 +218,13 @@ export async function remote<T>(channel: string, input: unknown): Promise<T> {
   if (!c) throw new Error('That needs your computer. Pair with it in Settings → Sync.')
   // Send what's changed here first, so the computer works on the same data…
   await syncNow()
-  if (!online) throw new Error(lastError ?? 'Can’t reach your computer.')
-  const r = await c.rpc(channel, input)
+  // (Through the cloud, the computer fetches it before it starts: whether it's reachable shows in the call.)
+  if (!cloudAuth() && !online) throw new Error(lastError ?? 'Can’t reach your computer.')
+  const r = await c.rpc(channel, input).catch((e: unknown) => {
+    online = false
+    changed()
+    throw e
+  })
   if (!r.ok) throw new Error(r.error ?? 'Something went wrong on your computer')
   // …and bring back whatever it changed.
   await syncNow()
@@ -209,13 +286,13 @@ export function startAutoSync(): void {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       changed()
-      if (makeClient()) void syncNow()
+      if (canSync()) void syncNow()
     }, 4000)
   })
-  setInterval(() => !document.hidden && makeClient() && void syncNow(), 60_000)
+  setInterval(() => !document.hidden && canSync() && void syncNow(), 60_000)
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) void saveNow()
-    else if (makeClient()) void syncNow()
+    else if (canSync()) void syncNow()
   })
 }
 
@@ -238,16 +315,19 @@ export async function fileUrl(url: string): Promise<string | null> {
   if (known) return known
   const cached = await idb.get<Uint8Array>('files', url)
   if (cached) return blobUrl(url, cached)
-  const c = makeClient()
-  if (!c) return null
-  try {
-    const data = await c.getFile(url)
-    if (!data) return null
-    await idb.set('files', url, data)
-    return blobUrl(url, data)
-  } catch {
-    return null
+  // From the computer, or failing that the cloud (pasted images are kept there too).
+  for (const c of [makeClient(), url.startsWith('studywise-file://attachments/') ? cloudClient() : null]) {
+    if (!c) continue
+    try {
+      const data = await c.getFile(url)
+      if (!data) continue
+      await idb.set('files', url, data)
+      return blobUrl(url, data)
+    } catch {
+      /* try the next */
+    }
   }
+  return null
 }
 
 /** An image pasted or added on the phone: kept here and sent to the computer on the next sync. */

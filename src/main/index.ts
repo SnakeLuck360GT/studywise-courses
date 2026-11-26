@@ -12,6 +12,7 @@ import { detectClaude, setOverridePath } from './ai/claudePath'
 import { registerIpc, broadcast, setAfterCall, refreshPlanUsage, runHandler } from './ipc'
 import { configureSyncServer, startSyncServer, stopSyncServer } from './sync/server'
 import { configureLink, startLinkSync, stopLinkSync } from './sync/link'
+import { configureCloud, startCloudSync, stopCloudSync } from './sync/cloud'
 import { buildMenu } from './menu'
 import { loadWindowState, trackWindowState } from './windowState'
 import { onJobEvent, runningJobCount, setUsageProbe } from './jobs'
@@ -301,6 +302,17 @@ app.whenReady().then(async () => {
   })
   startLinkSync()
   app.on('before-quit', () => stopLinkSync())
+
+  // Syncing and backing up through the cloud (the marketplace server), when it's on.
+  configureCloud({
+    onStatus: (status) => broadcast({ type: 'cloud', status }),
+    onReceived: (received) => {
+      broadcast({ type: 'sync', received })
+      updateBadge()
+    }
+  })
+  startCloudSync()
+  app.on('before-quit', () => stopCloudSync())
 
   onJobEvent((ev) => {
     if (ev.type === 'delta') {

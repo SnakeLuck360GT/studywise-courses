@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Smartphone, Laptop, RefreshCw, Trash2, Wifi, WifiOff, CheckCircle2, AlertTriangle } from 'lucide-react'
-import type { LinkStatus, SyncStatus } from '@shared/types'
+import { Smartphone, Laptop, RefreshCw, Trash2, Wifi, WifiOff, CheckCircle2, AlertTriangle, Cloud, CloudOff, History } from 'lucide-react'
+import type { CloudInfo, CloudStatus, LinkStatus, SyncStatus } from '@shared/types'
 import type { PhoneSyncStatus } from '@shared/mobile'
 import { api, errorText, onEvent } from '../lib/api'
 import { mobile } from '../lib/platform'
@@ -66,6 +66,7 @@ export function DesktopPhoneTab() {
   const addr = s.addresses.map((a) => `${a}:${s.port}`)
   return (
     <div className="grid gap-4 lg:grid-cols-2">
+      <CloudCard />
       <Card className="flex flex-col gap-4">
         <h3 className="flex items-center gap-2 text-lg font-semibold">
           <Smartphone className="size-5" /> Sync with your phone or another computer
@@ -295,6 +296,173 @@ function LinkComputerCard({ onLinked }: { onLinked: (s: LinkStatus) => void }) {
 
 
 // ---------------------------------------------------------------------------
+// Desktop: syncing and backing up through the cloud (the marketplace server).
+
+const gb = (bytes: number) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(bytes / 1e6, bytes ? 0.1 : 0).toFixed(1)} MB`)
+
+export function useCloudStatus(): [CloudStatus | null, (s: CloudStatus) => void] {
+  const [s, setS] = useState<CloudStatus | null>(null)
+  useEffect(() => {
+    void api.sync.cloudStatus().then(setS)
+    return onEvent((ev) => {
+      if (ev.type === 'cloud') setS(ev.status)
+    })
+  }, [])
+  return [s, setS]
+}
+
+function CloudCard() {
+  const [s, setS] = useCloudStatus()
+  const [info, setInfo] = useState<CloudInfo | null>(null)
+  const [busy, setBusy] = useState(false)
+  const go = useStore((st) => st.go)
+  const loadInfo = () => void api.sync.cloudInfo().then(setInfo).catch(() => setInfo(null))
+  useEffect(() => {
+    if (s?.on && s.state === 'idle') loadInfo()
+  }, [s?.on, s?.state, s?.lastSync])
+  if (!s) return null
+  const host = s.server?.replace(/^https?:\/\//, '') ?? 'the cloud'
+  const set = async (on: boolean) => {
+    setBusy(true)
+    try {
+      setS(await api.sync.cloudSet({ on }))
+      toast(on ? `Your library is backed up to ${host} and syncs through it.` : 'Cloud sync is off. This computer keeps everything; the cloud keeps its copy too.', 'good')
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const remove = async () => {
+    if (!(await confirmDialog(`Delete your copy on ${host}?`, 'Your library, its files and the daily backups go from the cloud. Every device keeps its own copy, but they stop syncing through the cloud.', { confirmText: 'Delete cloud copy', danger: true }))) return
+    try {
+      setS(await api.sync.cloudDelete())
+      setInfo(null)
+      toast('Deleted from the cloud', 'good')
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    }
+  }
+  const used = info ? info.usage.data + info.usage.files : 0
+  return (
+    <Card className="flex flex-col gap-4 lg:col-span-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="flex items-center gap-2 text-lg font-semibold">
+          <Cloud className="size-5" /> Cloud sync & backup
+        </h3>
+        {s.on && (
+          <div className="flex items-center gap-2 text-[0.9rem]">
+            {s.state === 'syncing' ? (
+              <Pill tone="accent">
+                <Spinner className="mr-1.5 size-3" /> Syncing…
+              </Pill>
+            ) : s.state === 'error' ? (
+              <Pill tone="warn">
+                <CloudOff className="mr-1 size-3.5" /> Not synced
+              </Pill>
+            ) : (
+              <Pill tone="good">
+                <CheckCircle2 className="mr-1 size-3.5" /> Synced {timeAgo(s.lastSync)}
+              </Pill>
+            )}
+            <Button size="icon" variant="ghost" title="Sync now" aria-label="Sync with the cloud now" disabled={s.state === 'syncing'} onClick={async () => setS(await api.sync.cloudNow())}>
+              <RefreshCw className={cx('size-4', s.state === 'syncing' && 'animate-spin')} />
+            </Button>
+          </div>
+        )}
+      </div>
+      <p className="text-[0.92rem] text-muted">
+        Keep a copy of your whole library (courses, decks, notes, progress, and the slides and transcripts your courses are made from) on {s.ready ? host : 'your marketplace server'}, and sync your computers and phone through it. They don’t need to be on the same Wi‑Fi or switched on at the same time, and nothing is lost if a device is. A
+        new computer or phone gets everything by turning this on there.
+      </p>
+      {!s.ready ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg bg-surface-2 px-4 py-3 text-[0.9rem]">
+          <span className="min-w-0 flex-1 text-muted">Cloud sync uses your marketplace account. Connect to it first.</span>
+          <Button size="sm" onClick={() => go({ name: 'settings', tab: 'market' })}>
+            Settings → Marketplace
+          </Button>
+        </div>
+      ) : (
+        <Toggle checked={s.on === true} disabled={busy} onChange={(on) => void set(on)} label={busy ? (s.on ? 'Turning off…' : 'Sending your library up… (the first time can take a few minutes)') : `Sync and back up through ${host}${s.user ? ` as ${s.user}` : ''}`} />
+      )}
+      {s.on && (
+        <>
+          {s.error && (
+            <div className="flex items-start gap-2 text-[0.9rem] text-warn">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {s.error}
+            </div>
+          )}
+          {(s.pending > 0 || s.filesLeft > 0) && s.state !== 'syncing' && (
+            <p className="text-[0.88rem] text-muted">
+              {[s.pending > 0 && `${s.pending} ${s.pending === 1 ? 'change' : 'changes'} to send`, s.filesLeft > 0 && `${s.filesLeft} ${s.filesLeft === 1 ? 'file' : 'files'} still to copy`].filter(Boolean).join(' · ')}
+            </p>
+          )}
+          {info && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-xl border border-line px-4 py-3">
+                <div className="flex items-baseline justify-between text-[0.9rem]">
+                  <span className="font-semibold">Space used</span>
+                  <span className="text-muted">
+                    {gb(used)} of {gb(info.quota)}
+                  </span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-surface-2">
+                  <div className={cx('h-full rounded-full', used / info.quota > 0.9 ? 'bg-warn' : 'bg-accent')} style={{ width: `${Math.min(100, Math.max(1, (used / info.quota) * 100))}%` }} />
+                </div>
+                <div className="mt-2 text-[0.82rem] text-muted">
+                  {info.rows.toLocaleString()} items · {gb(info.usage.files)} of files
+                </div>
+                <div className="mt-2 flex items-center gap-1.5 text-[0.82rem] text-muted">
+                  <History className="size-3.5" /> {info.snapshots.length ? `Daily backups for the last ${info.snapshots.length} day${info.snapshots.length === 1 ? '' : 's'} (kept 14 days)` : 'A daily backup is kept for 14 days, from tomorrow.'}
+                </div>
+              </div>
+              <div className="rounded-xl border border-line px-4 py-3">
+                <div className="mb-1 text-[0.9rem] font-semibold">Syncing through the cloud</div>
+                <ul className="flex flex-col gap-1.5">
+                  {info.devices.map((d) => (
+                    <li key={d.id} className="flex items-center gap-2 text-[0.88rem]">
+                      {d.kind === 'phone' ? <Smartphone className="size-4 text-muted" /> : <Laptop className="size-4 text-muted" />}
+                      <span className="min-w-0 flex-1 truncate">{d.name}</span>
+                      <span className="text-muted">{timeAgo(d.lastSync)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+          <p className="text-[0.85rem] text-muted">
+            On your phone, open Settings → Sync and choose <b>Sync through the cloud</b>. Pairing it with this computer below is still how its AI features (Explain, marking answers) reach your Claude login. Settings, prompts and API keys stay on each device.
+          </p>
+          <div>
+            <Button size="sm" variant="ghost" className="text-bad" onClick={() => void remove()}>
+              <Trash2 className="size-4" /> Delete my cloud copy…
+            </Button>
+          </div>
+        </>
+      )}
+    </Card>
+  )
+}
+
+/** Asked once, when the marketplace is connected and cloud sync hasn't been decided: turn it on? */
+export async function offerCloudSync(): Promise<void> {
+  const s = await api.sync.cloudStatus().catch(() => null)
+  if (!s || s.on !== null || !s.ready) return
+  const host = s.server?.replace(/^https?:\/\//, '') ?? 'the cloud'
+  const yes = await confirmDialog(
+    `Back up and sync through ${host}?`,
+    `Studywise can keep a copy of your whole library on ${host} (your marketplace account) and sync your computers and phone through it, so they don’t need the same Wi‑Fi and nothing is lost if a device is. Turn it off any time in Settings → Devices.`,
+    { confirmText: 'Turn on' }
+  )
+  try {
+    await api.sync.cloudSet({ on: yes })
+    if (yes) toast(`Your library is backed up to ${host} and syncs through it.`, 'good')
+  } catch (e) {
+    toast(errorText(e), 'bad')
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Phone: pair with a computer and see how syncing is going.
 
 export function usePhoneSync(): PhoneSyncStatus | null {
@@ -304,6 +472,106 @@ export function usePhoneSync(): PhoneSyncStatus | null {
     return mobile().sync.onStatus(setS)
   }, [])
   return s
+}
+
+/** Phone: sync through the cloud (with the computer's account, or an address and key typed in). */
+function PhoneCloudCard({ s }: { s: PhoneSyncStatus }) {
+  const [busy, setBusy] = useState(false)
+  const [manual, setManual] = useState(false)
+  const [url, setUrl] = useState('')
+  const [key, setKey] = useState('')
+  const use = async (input?: { url: string; key: string }) => {
+    setBusy(true)
+    try {
+      await mobile().sync.useCloud(input)
+      toast('Syncing through the cloud', 'good')
+      useStore.getState().bump()
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (s.cloud.on)
+    return (
+      <Card className="flex flex-col gap-3">
+        <h3 className="flex items-center gap-2 text-lg font-semibold">
+          <Cloud className="size-5" /> Syncing through the cloud
+        </h3>
+        <div className="flex flex-wrap items-center gap-2 text-[0.92rem]">
+          {s.state === 'syncing' ? (
+            <Pill tone="accent">
+              <Spinner className="mr-1.5 size-3" /> Syncing…
+            </Pill>
+          ) : s.error ? (
+            <Pill tone="warn">
+              <CloudOff className="mr-1 size-3.5" /> Not synced
+            </Pill>
+          ) : (
+            <Pill tone="good">
+              <CheckCircle2 className="mr-1 size-3.5" /> Synced {timeAgo(s.cloud.lastSync)}
+            </Pill>
+          )}
+        </div>
+        {s.pending > 0 && <p className="text-[0.9rem] text-muted">{s.pending} change{s.pending === 1 ? '' : 's'} waiting to sync.</p>}
+        {s.error && <p className="text-[0.88rem] text-muted">{s.error}</p>}
+        <div className="text-[0.85rem] text-muted">
+          Server <code className="font-mono">{s.cloud.server?.replace(/^https?:\/\//, '')}</code>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="primary"
+            loading={s.state === 'syncing'}
+            onClick={async () => {
+              const r = await mobile().sync.now()
+              if (r.error) toast(r.error, 'bad')
+              else toast('Synced', 'good')
+            }}
+          >
+            <RefreshCw className="size-4" /> Sync now
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              if (await confirmDialog('Stop syncing through the cloud?', s.paired ? 'Your library stays on the phone, and syncs with your computer over Wi‑Fi again.' : 'Your library stays on the phone but stops syncing.', { confirmText: 'Stop', danger: true })) await mobile().sync.stopCloud()
+            }}
+          >
+            Stop using the cloud
+          </Button>
+        </div>
+        <p className="text-[0.85rem] text-muted">Your changes go up whenever you’re online, from anywhere, and come down to your computers. Studying works offline as always.</p>
+      </Card>
+    )
+  return (
+    <Card className="flex flex-col gap-3">
+      <h3 className="flex items-center gap-2 text-lg font-semibold">
+        <Cloud className="size-5" /> Sync through the cloud
+      </h3>
+      <p className="text-[0.9rem] text-muted">Sync from anywhere, not just on the same Wi‑Fi as your computer, with your library backed up on your marketplace server. Your computer needs cloud sync on too (Settings → Devices there).</p>
+      {s.paired && (
+        <Button variant="primary" loading={busy && !manual} onClick={() => void use()}>
+          <Cloud className="size-4" /> Use the same cloud as {s.desktopName ?? 'my computer'}
+        </Button>
+      )}
+      {manual || !s.paired ? (
+        <div className="flex flex-col gap-3">
+          <Field label="Server address">
+            <Input inputMode="url" autoCapitalize="off" autoCorrect="off" placeholder="courses.example.com" value={url} onChange={(e) => setUrl(e.target.value)} />
+          </Field>
+          <Field label="API key" hint="Make one on the server’s site: Account → API keys.">
+            <Input autoCapitalize="off" autoCorrect="off" spellCheck={false} placeholder="swm_…" value={key} onChange={(e) => setKey(e.target.value)} />
+          </Field>
+          <Button variant={s.paired ? 'ghost' : 'primary'} loading={busy && manual} disabled={!url.trim() || !key.trim()} onClick={() => (setManual(true), void use({ url, key }))}>
+            Sync through this server
+          </Button>
+        </div>
+      ) : (
+        <button className="self-start text-[0.85rem] text-muted underline" onClick={() => setManual(true)}>
+          Type an address and key instead
+        </button>
+      )}
+    </Card>
+  )
 }
 
 export function MobileSyncTab() {
@@ -328,10 +596,13 @@ export function MobileSyncTab() {
 
   if (!s.paired)
     return (
+      <div className="flex flex-col gap-4">
+      <PhoneCloudCard s={s} />
       <Card className="flex flex-col gap-4">
         <h3 className="flex items-center gap-2 text-lg font-semibold">
-          <Laptop className="size-5" /> Connect to your computer
+          <Laptop className="size-5" /> {s.cloud.on ? 'Pair with your computer for AI' : 'Connect to your computer'}
         </h3>
+        {s.cloud.on && <p className="text-[0.9rem] text-muted">Your library syncs through the cloud. Pairing with your computer lets AI features (Explain, marking written answers, writing topics) run there, through your Claude login, when you’re on the same Wi‑Fi.</p>}
         <ol className="list-decimal space-y-1 pl-5 text-[0.92rem] text-muted">
           <li>On your computer, open Studywise → Settings → Devices.</li>
           <li>Turn on syncing and press Pair a device.</li>
@@ -348,14 +619,17 @@ export function MobileSyncTab() {
         </Button>
         <p className="text-[0.85rem] text-muted">Your phone and computer need to be on the same Wi‑Fi. After pairing, your library copies to the phone and you can study offline; changes sync whenever the computer is reachable.</p>
       </Card>
+      </div>
     )
 
   return (
     <div className="flex flex-col gap-4">
+      <PhoneCloudCard s={s} />
       <Card className="flex flex-col gap-3">
         <h3 className="flex items-center gap-2 text-lg font-semibold">
           <Laptop className="size-5" /> {s.desktopName ?? 'Your computer'}
         </h3>
+        {s.cloud.on && <p className="text-[0.88rem] text-muted">Paired for AI features. Your library syncs through the cloud.</p>}
         <div className="flex flex-wrap items-center gap-2 text-[0.92rem]">
           {s.state === 'syncing' ? (
             <Pill tone="accent">
@@ -370,10 +644,10 @@ export function MobileSyncTab() {
               <WifiOff className="mr-1 size-3.5" /> Can’t reach it
             </Pill>
           )}
-          <span className="text-muted">Last synced {timeAgo(s.lastSync)}</span>
+          {!s.cloud.on && <span className="text-muted">Last synced {timeAgo(s.lastSync)}</span>}
         </div>
-        {s.pending > 0 && <p className="text-[0.9rem] text-muted">{s.pending} change{s.pending === 1 ? '' : 's'} waiting to sync.</p>}
-        {s.error && !s.online && <p className="text-[0.88rem] text-muted">{s.error}</p>}
+        {!s.cloud.on && s.pending > 0 && <p className="text-[0.9rem] text-muted">{s.pending} change{s.pending === 1 ? '' : 's'} waiting to sync.</p>}
+        {!s.cloud.on && s.error && !s.online && <p className="text-[0.88rem] text-muted">{s.error}</p>}
         <div className="text-[0.85rem] text-muted">
           Address <code className="font-mono">{s.address}</code>
         </div>

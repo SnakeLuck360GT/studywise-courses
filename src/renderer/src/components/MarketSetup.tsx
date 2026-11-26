@@ -5,6 +5,7 @@ import { api, errorText } from '../lib/api'
 import { toast } from '../lib/store'
 import { confirmDialog } from '../lib/dialogs'
 import { Button, Card, Field, Input, Pill, Toggle } from './ui'
+import { offerCloudSync } from './PhoneSync'
 
 /**
  * Connect to a marketplace: its address, and an API key made on its account
@@ -49,6 +50,8 @@ export function MarketSetup({ onConnected }: { onConnected?: () => void }) {
       setStatus(await api.market.status())
       toast(`Connected as ${r.user}`, 'good')
       onConnected?.()
+      // The same account can back up and sync the library: offer it now (only if it hasn't been decided).
+      void offerCloudSync()
     } catch (e) {
       setUser(null)
       setError(errorText(e))

@@ -323,6 +323,33 @@ export interface SyncStatus {
 }
 
 /** This computer's link to another computer it syncs with (Settings → Devices → Link to another computer). */
+/** Syncing and backing up through the cloud (the marketplace server, same account). */
+export interface CloudStatus {
+  /** null: not decided yet (Studywise offers it once); false: turned off. */
+  on: boolean | null
+  /** The marketplace is connected, so cloud sync can be turned on. */
+  ready: boolean
+  server: string | null
+  user: string | null
+  lastSync: string | null
+  state: 'idle' | 'syncing' | 'error'
+  error: string | null
+  /** Changes made here that haven't gone up yet. */
+  pending: number
+  /** Files (course files, pasted images) still to copy; set after each sync. */
+  filesLeft: number
+}
+
+/** What the cloud keeps for this account. */
+export interface CloudInfo {
+  rows: number
+  devices: { id: string; name: string; kind: 'computer' | 'phone'; firstSeen: string; lastSync: string }[]
+  usage: { data: number; files: number; snapshots: number; total: number }
+  quota: number
+  snapshots: { day: string; bytes: number }[]
+  lastChange: string | null
+}
+
 export interface LinkStatus {
   linked: boolean
   /** The other computer's name and address. */
