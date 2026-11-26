@@ -14,6 +14,7 @@ import { useStore, toast, type Route } from './lib/store'
 import { api, onEvent, errorText } from './lib/api'
 import { startCommandDispatch, useCommands, runCommand } from './lib/commands'
 import { startArrowNav } from './lib/arrowNav'
+import { historyNav, installMouseHistoryNav } from './lib/historyNav'
 import { askText, confirmDialog, chooseDialog, DialogHost } from './lib/dialogs'
 import { GooNav } from './components/GooNav'
 import { CommandPalette } from './components/CommandPalette'
@@ -105,6 +106,9 @@ export function App() {
     if (route.name === 'deck' || (route.name === 'notes' && route.id)) void api.settings.set({ key: 'ui.lastRoute', value: route.name === 'deck' ? { name: 'deck', id: route.id } : route })
   }, [route, ready])
 
+  // The mouse's back and forward buttons.
+  useEffect(() => installMouseHistoryNav(), [])
+
   // Events from the main process.
   useEffect(
     () =>
@@ -115,6 +119,7 @@ export function App() {
         // Another device synced changes into this library: show them.
         if (ev.type === 'sync' && ev.received) st.bump()
         if (ev.type === 'open-files') openFiles(ev.paths)
+        if (ev.type === 'nav') historyNav(ev.dir, 'system')
         if (ev.type === 'job') {
           const j = ev.job
           st.upsertJob(j)

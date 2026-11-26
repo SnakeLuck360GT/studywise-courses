@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { keyLabel, IS_MAC } from '@shared/keymap'
-import { Search, Plus, ArrowLeft } from 'lucide-react'
+import { Search, Plus, ArrowLeft, ArrowRight } from 'lucide-react'
 import { useStore, type Route } from '../lib/store'
 import { cx, Kbd } from './ui'
 import { runCommand } from '../lib/commands'
@@ -27,6 +27,7 @@ export function GooNav() {
   const jobs = useStore((s) => s.jobs)
   const running = jobs.filter((j) => j.status === 'running').length
   const canGoBack = useStore((s) => s.back.length > 0)
+  const canGoForward = useStore((s) => s.forward.length > 0)
   const navRef = useRef<HTMLElement>(null)
   const brandRef = useRef<HTMLDivElement>(null)
   const linksRef = useRef<HTMLDivElement>(null)
@@ -151,6 +152,17 @@ export function GooNav() {
             className="no-drag -mr-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-[background,color,transform] duration-200 hover:bg-surface-2 hover:text-ink active:scale-95 disabled:pointer-events-none disabled:opacity-35"
           >
             <ArrowLeft className="size-[18px]" />
+          </button>
+        )}
+        {!IS_MAC && (
+          <button
+            onClick={() => useStore.getState().goForward()}
+            disabled={!canGoForward}
+            aria-label="Forward"
+            title="Forward (Alt+→)"
+            className="no-drag -mr-1 grid size-8 shrink-0 place-items-center rounded-lg text-muted transition-[background,color,transform] duration-200 hover:bg-surface-2 hover:text-ink active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+          >
+            <ArrowRight className="size-[18px]" />
           </button>
         )}
         <button onClick={() => navTo({ name: 'home' })} className="no-drag flex items-center gap-2 pr-2">

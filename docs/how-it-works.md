@@ -168,6 +168,7 @@ There are a lot. `?` lists them all and `⌘K` searches everything. The main one
 | `Space`, `1`–`4`, `↩` | flip, rate, submit |
 | `h`, `s`, `r` | hint, skip, I was right |
 | `g` then `d` / `n` / `s` | go to decks, notes, settings |
+| `⌘[`, `⌘]` (`Alt+←`, `Alt+→` on Windows), the mouse's side buttons | back, forward (also the ← → buttons at the left of the top bar on Windows, and a trackpad swipe on a Mac; see `src/renderer/src/lib/historyNav.ts`) |
 | `j`, `k`, `x`, `e` | move, select, explain in a card list |
 
 ## Your data

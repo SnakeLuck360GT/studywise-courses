@@ -128,10 +128,16 @@ function createWindow(): void {
   // No traffic lights in fullscreen, so the nav can drop its left inset.
   mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('sw:event', { type: 'fullscreen', on: true }))
   mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('sw:event', { type: 'fullscreen', on: false }))
-  // Windows: the mouse's back/forward buttons (and keyboard media keys) move through history.
+  // Windows and Linux: the mouse's back/forward buttons (and keyboard browser keys) move through history.
+  // The window also sees most mice's side buttons as mouse events; the renderer makes sure one press moves once.
   mainWindow.on('app-command', (_e, cmd) => {
-    if (cmd === 'browser-backward') mainWindow?.webContents.send('sw:event', { type: 'menu', action: 'go.back' })
-    if (cmd === 'browser-forward') mainWindow?.webContents.send('sw:event', { type: 'menu', action: 'go.forward' })
+    if (cmd === 'browser-backward') mainWindow?.webContents.send('sw:event', { type: 'nav', dir: 'back' })
+    if (cmd === 'browser-forward') mainWindow?.webContents.send('sw:event', { type: 'nav', dir: 'forward' })
+  })
+  // macOS: a trackpad swipe (when swiping between pages is turned on in System Settings).
+  mainWindow.on('swipe', (_e, direction) => {
+    if (direction === 'left') mainWindow?.webContents.send('sw:event', { type: 'nav', dir: 'back' })
+    if (direction === 'right') mainWindow?.webContents.send('sw:event', { type: 'nav', dir: 'forward' })
   })
   trackWindowState(mainWindow)
   mainWindow.once('ready-to-show', () => mainWindow?.show())

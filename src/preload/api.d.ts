@@ -7,6 +7,8 @@ export type StudywiseEvent =
   | { type: 'job'; job: JobInfo }
   | { type: 'job:delta'; jobId: string; text: string }
   | { type: 'menu'; action: string }
+  /** Back or forward from the system: a mouse's side button on Windows, or a trackpad swipe on a Mac. */
+  | { type: 'nav'; dir: 'back' | 'forward' }
   | { type: 'open-files'; paths: string[] }
   | { type: 'claude:status'; status: ClaudeStatus }
   | { type: 'fullscreen'; on: boolean }
