@@ -30,7 +30,8 @@ import {
   Smartphone,
   Laptop,
   Store,
-  WifiOff
+  WifiOff,
+  Volume2
 } from 'lucide-react'
 import type { UpdateStatus } from '@shared/update'
 import type { Preset, PresetVersion, CustomAction, ModelChoice, AiCall, Thresholds, AiProvider, OllamaModel } from '@shared/types'
@@ -50,6 +51,8 @@ import { OllamaModelOptions, useOllamaModels } from '../components/OllamaModels'
 import { DesktopPhoneTab, MobileSyncTab } from '../components/PhoneSync'
 import { MarketSetup } from '../components/MarketSetup'
 import { IS_MOBILE, mobile } from '../lib/platform'
+import { DEFAULT_VOICE_PROMPT, VOICE_MODELS, modelHasTags, type VoiceOption, type VoiceStatus } from '@shared/voice'
+import { setVoiceStatus, speak, stopVoice, useSpeaking } from '../lib/voice'
 
 const DESKTOP_TABS = [
   { id: 'general', label: 'General', icon: Gear },
@@ -58,6 +61,7 @@ const DESKTOP_TABS = [
   { id: 'prompts', label: 'Prompts', icon: Sparkles },
   { id: 'actions', label: 'Custom actions', icon: Wand2 },
   { id: 'usage', label: 'AI usage', icon: Activity },
+  { id: 'voice', label: 'Voice', icon: Volume2 },
   { id: 'phone', label: 'Devices', icon: Smartphone },
   { id: 'market', label: 'Marketplace', icon: Store },
   { id: 'jobs', label: 'Jobs', icon: ListChecks }
@@ -109,6 +113,7 @@ export function Settings({ tab = 'general' }: { tab?: string }) {
         {cur === 'prompts' && <PromptsTab />}
         {cur === 'actions' && <ActionsTab />}
         {cur === 'usage' && <UsageTab />}
+        {cur === 'voice' && <VoiceTab />}
         {cur === 'phone' && <DesktopPhoneTab />}
         {cur === 'market' && (
           <div className="max-w-2xl">
@@ -263,6 +268,194 @@ function General() {
         <p className="text-[0.92rem] text-muted">
           {IS_MOBILE && 'On the phone, AI features run on your paired computer. '}AI features run through the Claude Code CLI on this computer with your own Claude subscription, or through Ollama if you switch to it under AI provider. Studywise never sees your Claude login. Use is subject to each provider’s terms.
         </p>
+      </Card>
+    </div>
+  )
+}
+
+/** Voice mode: ElevenLabs reads notes cards and explanations aloud while you go through a week. */
+function VoiceTab() {
+  const [st, setSt] = useState<VoiceStatus | null>(null)
+  const [key, setKey] = useState('')
+  const [voiceId, setVoiceId] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [voices, setVoices] = useState<VoiceOption[] | null>(null)
+  const [voicesErr, setVoicesErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState<'save' | 'voices' | null>(null)
+  const speaking = useSpeaking()
+  const testing = speaking?.key === 'voice-test'
+
+  const apply = (s: VoiceStatus) => {
+    setSt(s)
+    setVoiceId(s.voiceId)
+    setPrompt(s.prompt)
+    setVoiceStatus(s)
+  }
+  const save = async (patch: Parameters<typeof api.voice.setConfig>[0]) => {
+    setBusy('save')
+    try {
+      apply(await api.voice.setConfig(patch))
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setBusy(null)
+    }
+  }
+  const loadVoices = async () => {
+    setBusy('voices')
+    setVoicesErr(null)
+    try {
+      setVoices(await api.voice.voices())
+    } catch (e) {
+      setVoicesErr(errorText(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+  useEffect(() => {
+    void api.voice.status().then((s) => {
+      apply(s)
+      if (s.hasKey) void loadVoices()
+    })
+    return () => stopVoice()
+  }, [])
+  if (!st) return null
+  const tags = modelHasTags(st.model)
+  const test = () =>
+    testing
+      ? stopVoice()
+      : void speak(
+          'Here’s how your notes will sound. The photoelectric effect: when light shines on a metal, electrons can be knocked out of it, but only if each photon has enough energy.',
+          'voice-test'
+        )
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+      <div className="flex flex-col gap-4">
+        <Card className={cx('flex flex-col gap-3', st.ready && 'ring-1 ring-accent/40')}>
+          <div className="flex items-center gap-2">
+            <Volume2 className={cx('size-5', st.ready ? 'text-accent' : 'text-muted')} />
+            <h3 className="text-lg font-semibold">Voice mode</h3>
+          </div>
+          <Toggle checked={st.enabled} onChange={(v) => void save({ enabled: v })} label="Read notes cards and explanations aloud" />
+          <Field label="Play">
+            <Segmented<'auto' | 'click'>
+              value={st.autoplay ? 'auto' : 'click'}
+              onChange={(v) => void save({ autoplay: v === 'auto' })}
+              options={[
+                { value: 'auto', label: 'Automatically' },
+                { value: 'click', label: 'When I click' }
+              ]}
+            />
+          </Field>
+          <p className="text-[0.88rem] text-muted">
+            {st.enabled && !st.hasKey
+              ? 'Add your ElevenLabs API key below to hear it.'
+              : st.autoplay
+                ? 'While you go through a week, each notes card is read out as it opens, and so is an explanation once you press Explain. Questions and flashcards are never read out. The speaker button on a card plays it again or stops it.'
+                : 'Each notes card and explanation has a Read aloud button: nothing plays until you press it. Questions and flashcards are never read out.'}
+          </p>
+        </Card>
+        <Card className="flex flex-col gap-4">
+          <h3 className="text-lg font-semibold">ElevenLabs</h3>
+          <Field
+            label="API key"
+            hint={st.hasKey ? 'Saved and encrypted with your login on this computer. It’s only ever sent to ElevenLabs.' : 'Create one at elevenlabs.io under Developers → API keys. It needs text to speech (and voices, to list your voices).'}
+          >
+            <div className="flex gap-2">
+              <Input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={st.hasKey ? '••••••••••••  (saved)' : 'Paste your key'} autoComplete="off" />
+              <Button
+                variant="primary"
+                disabled={!key.trim()}
+                loading={busy === 'save'}
+                onClick={async () => {
+                  await save({ apiKey: key.trim() })
+                  setKey('')
+                  void loadVoices()
+                }}
+              >
+                Save
+              </Button>
+              {st.hasKey && (
+                <Button variant="ghost" onClick={() => save({ apiKey: null })}>
+                  Remove
+                </Button>
+              )}
+            </div>
+          </Field>
+          <Field label="Voice ID" hint="Pick one of your voices, or paste any voice’s ID from ElevenLabs’ voice library.">
+            <div className="flex flex-col gap-2">
+              {voices && voices.length > 0 && (
+                <Select value={voices.some((v) => v.id === st.voiceId) ? st.voiceId : ''} onChange={(e) => e.target.value && void save({ voiceId: e.target.value })}>
+                  <option value="">Your voices…</option>
+                  {voices.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {[v.name, v.category, v.description.slice(0, 60)].filter(Boolean).join(' · ')}
+                    </option>
+                  ))}
+                </Select>
+              )}
+              <div className="flex gap-2">
+                <Input
+                  value={voiceId}
+                  onChange={(e) => setVoiceId(e.target.value)}
+                  onBlur={() => voiceId.trim() !== st.voiceId && void save({ voiceId: voiceId.trim() })}
+                  className="font-mono text-[0.85rem]"
+                  placeholder="JBFqnCBsd6RMkjVDRZzb"
+                />
+                {st.hasKey && (
+                  <Button variant="ghost" loading={busy === 'voices'} onClick={loadVoices} title="Load your voices from ElevenLabs">
+                    <RefreshCw className="size-4" />
+                  </Button>
+                )}
+              </div>
+              {voicesErr && <span className="text-[0.85rem] text-bad">{voicesErr}</span>}
+            </div>
+          </Field>
+          <Field label="Model">
+            <Select value={st.model} onChange={(e) => void save({ model: e.target.value })}>
+              {VOICE_MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="flex flex-col gap-1.5">
+            <Toggle checked={st.autoTag && tags} onChange={(v) => void save({ autoTag: v })} label="Auto-tag: Claude adds audio tags before it’s read" />
+            <p className="text-[0.85rem] text-muted">
+              {tags
+                ? 'Claude adds tags like [curious], [short pause] or [reassuring] where they fit, following your voice prompt, so it sounds like someone teaching. It never changes the words. One quick AI call per card the first time you hear it.'
+                : 'This model doesn’t understand audio tags. Pick an Eleven v4 or v3 model to use them.'}
+            </p>
+          </div>
+          <Field label="Voice prompt" hint="How the voice should sound. Claude follows it when it adds the tags.">
+            <Textarea
+              rows={4}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onBlur={() => prompt.trim() !== st.prompt && void save({ prompt: prompt.trim() })}
+              disabled={!tags || !st.autoTag}
+              placeholder={DEFAULT_VOICE_PROMPT}
+            />
+          </Field>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={test} disabled={!st.hasKey} loading={testing && speaking?.loading}>
+              <Play className="size-4" /> {testing && !speaking?.loading ? 'Stop' : 'Test the voice'}
+            </Button>
+            {prompt.trim() !== DEFAULT_VOICE_PROMPT && tags && st.autoTag && (
+              <Button variant="ghost" onClick={() => save({ prompt: '' })}>
+                <RotateCcw className="size-4" /> Default prompt
+              </Button>
+            )}
+          </div>
+        </Card>
+      </div>
+      <Card className="flex flex-col gap-3 self-start text-[0.92rem]">
+        <h3 className="text-lg font-semibold">How it works</h3>
+        <p className="text-muted">Each notes card goes to ElevenLabs’ text-to-speech with your own key, so it uses your ElevenLabs characters. Code, formulas and diagrams are mentioned rather than read symbol by symbol.</p>
+        <p className="text-muted">Audio is kept on this computer, so a card you’ve heard before plays straight away, even offline, and costs nothing again. Changing the voice, model or prompt makes new audio.</p>
+        <p className="text-muted">On your phone, voice mode uses this computer’s ElevenLabs key while it’s paired.</p>
       </Card>
     </div>
   )

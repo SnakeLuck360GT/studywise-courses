@@ -179,6 +179,8 @@ export function mockResponse(task: TaskId, mode: string, vars: Record<string, un
       }
       return { text: `### Mock action\n\nHere is a mock response about: ${firstLine(v('front')) || firstLine(v('source_text')) || 'this'}.`, structured: null }
     }
+    case 'voice_tag':
+      return { text: `[warmly] ${v('text').trim()}`, structured: null }
     case 'explain':
     case 'explain_chat':
       return {

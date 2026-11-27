@@ -186,6 +186,8 @@ function setupCsp(): void {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: studywise-file:",
     "font-src 'self' data:",
+    // Voice mode plays ElevenLabs audio the main process fetched.
+    "media-src 'self' data: blob:",
     isDev ? "connect-src 'self' ws: http://localhost:*" : "connect-src 'self'",
     "object-src 'none'",
     "base-uri 'none'",

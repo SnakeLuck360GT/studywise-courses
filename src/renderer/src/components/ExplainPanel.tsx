@@ -6,6 +6,8 @@ import { useStore, toast } from '../lib/store'
 import { api, streamCall, errorText } from '../lib/api'
 import { useCommands } from '../lib/commands'
 import { Markdown } from './Markdown'
+import { VoiceButton } from './VoiceButton'
+import { useReadAloud } from '../lib/voice'
 import { Button, Dots, Textarea, cx, Kbd, usePresence } from './ui'
 
 export interface ExplainCtx {
@@ -60,6 +62,12 @@ function Panel({ open, closing }: { open: ExplainOpen; closing: boolean }) {
   const explanationId = useRef<string | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const runToken = useRef(0)
+
+  // Voice mode reads each explanation out once it's finished.
+  const lastAt = msgs.length - 1
+  const last = msgs[lastAt]
+  const lastDone = !!last && last.role === 'assistant' && !last.streaming && !last.error && !!last.content
+  useReadAloud(lastDone ? last.content : null, `explain:${lastAt}`, lastDone)
 
   const append = (m: Msg) => setMsgs((cur) => [...cur, m])
   const updateLast = (patch: Partial<Msg>) => setMsgs((cur) => cur.map((m, i) => (i === cur.length - 1 ? { ...m, ...patch } : m)))
@@ -254,6 +262,7 @@ function Panel({ open, closing }: { open: ExplainOpen; closing: boolean }) {
             <div key={i} className={cx('pop-in rounded-xl border border-line bg-surface p-4', m.error && 'border-bad/40 bg-bad-soft')}>
               {m.label && <div className="mb-2 text-[0.72rem] font-semibold text-muted">{m.label}</div>}
               {m.content ? <Markdown streaming={m.streaming}>{m.content}</Markdown> : <Dots />}
+              {!m.streaming && !m.error && m.content && <VoiceButton text={m.content} voiceKey={`explain:${i}`} className="mt-2 -ml-2.5" />}
               {!m.streaming && !m.error && m.content && (
                 <button
                   onClick={() => {

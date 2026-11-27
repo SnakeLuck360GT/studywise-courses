@@ -31,6 +31,8 @@ import { insertRetry } from '@shared/retry'
 import { GREENS_TO_PASS, RED_GAP, nextPile, type PileRating } from '@shared/cardPile'
 import { DEFAULT_SCHEDULER } from '@shared/scheduler'
 import { SUBMIT_EVENT } from '../learn/Questions'
+import { VoiceButton } from '../components/VoiceButton'
+import { useReadAloud } from '../lib/voice'
 
 /** Chance of a surprise recall card from another topic after a section. */
 const RECALL_CHANCE = 0.25
@@ -696,6 +698,12 @@ function NotesStep({ section, first, goal, onNext, onAsk }: { section: TopicSect
   const [img, setImg] = useState<string | null>(null)
   const [imgErr, setImgErr] = useState(false)
   const [zoom, setZoom] = useState(false)
+  // Voice mode reads each notes card out as it opens (never the questions).
+  const spoken = `${section.heading}
+
+${section.notes}`
+  const voiceKey = `notes:${section.heading}:${section.notes.length}`
+  useReadAloud(spoken, voiceKey)
   useEffect(() => {
     if (!section.figure) return
     api.courses
@@ -712,7 +720,10 @@ function NotesStep({ section, first, goal, onNext, onAsk }: { section: TopicSect
             New · added {new Date(section.added).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
           </div>
         )}
-        <h2 className="mb-4 text-[clamp(1.35rem,2.6vw,1.85rem)] leading-tight font-semibold tracking-tight">{section.heading}</h2>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <h2 className="text-[clamp(1.35rem,2.6vw,1.85rem)] leading-tight font-semibold tracking-tight">{section.heading}</h2>
+          <VoiceButton text={spoken} voiceKey={voiceKey} className="mt-1" />
+        </div>
         <Markdown className="text-[1.05rem] leading-relaxed">{section.notes}</Markdown>
         {section.figure && !imgErr && (
           <figure className="mt-6">
@@ -808,6 +819,9 @@ function CardsStep({
   const idx = queue[0]
   const card = cards[idx]
   const again = (tries[idx] ?? 0) > 0
+  // Voice mode reads the AI explanation once it's written (not the card itself: that's a question).
+  const explainKey = `card-explain:${topicId}:${idx}:${tries[idx] ?? 0}`
+  useReadAloud(explanation, explainKey, !!rated && view === 'ai' && !explaining && !!explanation)
   const done = cards.length - new Set(queue).size
 
   const advance = (r: CardRating) => {
@@ -937,6 +951,7 @@ function CardsStep({
         <div className="rounded-xl border border-line bg-surface p-[clamp(18px,3.4vw,36px)]">
           <div className="mb-2 flex items-center gap-1.5 text-[0.85rem] font-semibold text-accent">
             <Sparkles className="size-4" /> Let’s go through it properly
+            {!explaining && explanation && <VoiceButton text={explanation} voiceKey={explainKey} className="ml-auto" />}
           </div>
           <Markdown className="mb-4 text-[clamp(1.35rem,2.6vw,1.85rem)] leading-tight font-semibold tracking-tight">{card.front}</Markdown>
           {explanation ? (

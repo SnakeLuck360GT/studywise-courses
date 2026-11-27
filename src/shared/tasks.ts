@@ -24,7 +24,8 @@ export const TASKS = [
   'course_extend',
   'course_dedupe',
   'course_combine',
-  'course_week_test'
+  'course_week_test',
+  'voice_tag'
 ] as const
 export type TaskId = (typeof TASKS)[number]
 
@@ -275,6 +276,15 @@ export const TASK_INFO: Record<TaskId, TaskInfo> = {
     variables: ['module', 'level', 'week', 'topics', 'files', 'difficulty', 'count', 'source_text', 'instructions'],
     streams: false,
     long: true
+  },
+  voice_tag: {
+    id: 'voice_tag',
+    label: 'Voice mode: add ElevenLabs audio tags before reading aloud',
+    defaultModel: 'haiku',
+    modes: ['markdown'],
+    variables: ['voice_prompt', 'text'],
+    streams: false,
+    long: false
   }
 }
 

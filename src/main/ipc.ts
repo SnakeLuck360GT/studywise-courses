@@ -22,6 +22,7 @@ import * as course from './services/course'
 import * as noteOrder from './services/noteOrder'
 import * as weekShare from './services/weekShare'
 import * as market from './services/market'
+import * as voice from './services/voice'
 import { assertCanMerge } from './services/contentCombine'
 import { CARD_CUTS, COURSE_FOCUSES, CourseQuestion, NOTE_LEVELS, WEEK_TEST_LEVELS } from '@shared/course'
 import * as io from './importexport'
@@ -813,6 +814,27 @@ export const handlers = {
       repo.setSetting('ollama.defaultModel', i.model.trim())
       return ollama.ollamaStatus()
     })
+  },
+
+  /** Voice mode: ElevenLabs reads notes cards and explanations aloud. */
+  voice: {
+    status: h(none, () => voice.voiceStatus()),
+    setConfig: h(
+      z.object({
+        apiKey: z.string().max(500).nullable().optional(),
+        enabled: z.boolean().optional(),
+        autoplay: z.boolean().optional(),
+        voiceId: z.string().max(100).optional(),
+        model: z.string().max(100).optional(),
+        autoTag: z.boolean().optional(),
+        prompt: z.string().max(4000).optional()
+      }),
+      (i) => voice.setVoiceConfig(i)
+    ),
+    voices: h(none, () => voice.listVoices()),
+    speak: h(z.object({ text: z.string().min(1).max(5000), model: z.string().max(100).optional(), voiceId: z.string().max(100).optional() }), (i) =>
+      voice.speak(i.text, { model: i.model, voiceId: i.voiceId })
+    )
   },
 
   ai: {
