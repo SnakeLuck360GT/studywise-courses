@@ -128,7 +128,8 @@ function weekRows(weekId: string) {
   return { week, course, courseDir, files, topics, cards }
 }
 
-export async function weekZip(weekId: string): Promise<{ bytes: Buffer; json: WeekJson }> {
+/** onProgress: how far packing has got, 0–1. */
+export async function weekZip(weekId: string, onProgress?: (fraction: number) => void): Promise<{ bytes: Buffer; json: WeekJson }> {
   const { week, course, courseDir, files, topics, cards } = weekRows(weekId)
   const json: WeekJson = {
     app: 'studywise-courses',
@@ -149,7 +150,7 @@ export async function weekZip(weekId: string): Promise<{ bytes: Buffer; json: We
     const full = join(courseDir, String(f.path))
     if (existsSync(full)) zip.file(`files/${f.path}`, readFileSync(full))
   }
-  return { bytes: await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }), json }
+  return { bytes: await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }, onProgress && ((m) => onProgress(m.percent / 100))), json }
 }
 
 /**

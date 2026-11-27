@@ -34,8 +34,7 @@ import {
   Zap,
   FilePlus2,
   Merge,
-  BookOpen
-} from 'lucide-react'
+  BookOpen, UploadCloud } from 'lucide-react'
 import { NOTE_LEVEL_INFO, NOTE_LEVELS, READING_WEEK, showError, WEEK_TEST_INFO, asReadingWeek, isReadingWeek, notReadingWeek, unreviewedSections, weekNumber, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
 import { estimateText, guessNote, topicSections, useUsageRate } from '../lib/usageEstimate'
 import { mergeWeekWith, offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics, writeWeekTest } from '../lib/courseFlows'
@@ -50,7 +49,7 @@ import { Shell, PageTitle } from '../components/Shell'
 import { Button, Dots, Menu, MenuItem, Pill, ProgressBar, Segmented, cx } from '../components/ui'
 import { TrimCardsModal } from '../components/TrimCards'
 import { AddNotesModal } from '../components/AddNotes'
-import { JobLive } from '../components/JobLive'
+import { JobBar, JobLive } from '../components/JobLive'
 import { PrivatePill } from '../components/Visibility'
 import { IS_MOBILE } from '../lib/platform'
 
@@ -120,6 +119,8 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
   const [trim, setTrim] = useState<{ topicId?: string; title: string; cut?: boolean } | null>(null)
   // The end-of-week test being written (on its own, or straight after planning).
   const testJob = runningJob(jobs, 'course_week_test', 'weekId', w.id)
+  // Going up to the marketplace (published automatically once it's written, or by hand).
+  const publishJob = jobs.find((j) => j.status === 'running' && j.meta?.publishing && j.meta?.weekId === w.id)
   const canWriteTest = !IS_MOBILE && !planning && !testJob && (w.files.length > 0 || written.length > 0)
   // Reading week (usually week 6): no lectures, so nothing to plan or look for unless it gets files.
   const reading = isReadingWeek(w.label)
@@ -372,6 +373,18 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
       <div className="flex flex-col gap-10">
         <section>
           <h2 className="mb-3 text-[1.1rem] font-semibold tracking-tight">Topics</h2>
+          {publishJob && (
+            <div className="mb-3 rounded-xl border border-accent/30 bg-accent-soft/40 p-5" data-publishing>
+              <div className="flex items-center gap-2 font-semibold">
+                <UploadCloud className="size-4 text-accent" /> Publishing {w.label} to the marketplace <Dots />
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <JobBar job={publishJob} className="flex-1" />
+                <span className="tabular w-10 text-right text-[0.8rem] font-semibold text-muted">{publishJob.percent === null ? '' : `${Math.round(publishJob.percent * 100)}%`}</span>
+              </div>
+              <div className="mt-1.5 text-[0.86rem] text-muted">{publishJob.progress}</div>
+            </div>
+          )}
           {notesJob && (
             <div className="mb-3 rounded-xl border border-accent/30 bg-accent-soft/40 p-5">
               <div className="flex items-center gap-2 font-semibold">

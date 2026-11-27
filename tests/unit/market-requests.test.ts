@@ -197,6 +197,53 @@ describe('doing a task (mock AI)', () => {
   })
 })
 
+describe('publishing', () => {
+  it('shows packing and uploading as a progress bar, and goes straight after writing when automatic', async () => {
+    const market = await import('../../src/main/services/market')
+    const course = await import('../../src/main/services/course')
+    const repo = await import('../../src/main/db/repo')
+    const jobs = await import('../../src/main/jobs')
+    const c = course.listCourses().find((x) => x.name === 'Thermo 201')!
+    const weekId = course.getCourse(c.id).weeks.find((w) => w.label === 'Week 3' && w.topics.some((t) => t.status === 'ready'))!.id
+    state.published = null
+    const stages: string[] = []
+    const percents: number[] = []
+    const meta: Record<string, unknown> = {}
+    await market.publish(weekId, {
+      signal: new AbortController().signal,
+      progress: () => {},
+      delta: () => {},
+      meta: (m) => Object.assign(meta, m),
+      live: (u) => {
+        if (u.stage) stages.push(u.stage)
+        if (typeof u.percent === 'number') percents.push(u.percent)
+      }
+    })
+    expect(meta).toMatchObject({ weekId, publishing: true })
+    expect(stages[0]).toMatch(/^Packing/)
+    expect(stages.some((x) => /^Uploading .* of .*MB/.test(x))).toBe(true)
+    expect(stages.at(-1)).toBe('Published')
+    expect(percents.at(-1)).toBe(1)
+    expect(percents).toEqual([...percents].sort((a, b) => a - b))
+    // The whole week went up, in pieces.
+    expect(state.published!.length).toBeGreaterThan(100_000)
+
+    // Automatic: published a moment after the last topic finishes, as a job with its progress.
+    state.published = null
+    repo.setSetting('market.publishedHash', {})
+    repo.setSetting('market.autoPublish', true)
+    try {
+      market.queueAutoPublish(weekId)
+      await new Promise((r) => setTimeout(r, market.AUTO_PUBLISH_DELAY_MS + 1500))
+      expect(state.published).toBeTruthy()
+      const job = jobs.listJobs().find((j) => j.meta?.publishing && j.meta?.weekId === weekId)!
+      expect([job.status, job.percent]).toEqual(['done', 1])
+    } finally {
+      repo.setSetting('market.autoPublish', false)
+    }
+  }, 30_000)
+})
+
 describe('your missing weeks', () => {
   it('asks for gaps up to your latest week once, offers ones on the marketplace, and shares your slides', async () => {
     const tasks = await import('../../src/main/services/marketTasks')

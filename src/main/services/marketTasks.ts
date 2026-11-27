@@ -299,7 +299,7 @@ export async function runTask(taskId: string, ctx: JobContext): Promise<{ week: 
     await contributeTo(r.weekId!, weekId, part(ctx, 0.92, 0.99))
     await request(`/api/tasks/${taskId}/done`, post())
   } else {
-    const { week } = await publish(weekId)
+    const { week } = await publish(weekId, part(ctx, 0.92, 0.99))
     await request(`/api/tasks/${taskId}/done`, post({ weekId: week.id }))
   }
   setSetting(TASK_WEEKS_SETTING, Object.fromEntries(Object.entries(taskWeeks()).filter(([k]) => k !== taskId)))

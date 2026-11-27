@@ -91,7 +91,48 @@ export class MarketError extends Error {
   }
 }
 
-export async function send(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+export /**
+ * Sends a body in pieces with node's http, so how much has gone up can be
+ * reported (fetch can't say). Answers like fetch does.
+ */
+async function uploadWithProgress(url: string, init: { method: string; headers: Record<string, string>; body: Uint8Array; signal: AbortSignal; onUpload: (fraction: number) => void }): Promise<Response> {
+  const u = new URL(url)
+  const mod = u.protocol === 'https:' ? await import('node:https') : await import('node:http')
+  const body = init.body
+  return new Promise<Response>((resolve, reject) => {
+    const req = mod.request(u, { method: init.method, headers: { ...init.headers, 'content-length': String(body.length) }, signal: init.signal }, (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('error', reject)
+      res.on('end', () => {
+        const headers = Object.fromEntries(Object.entries(res.headers).filter((e): e is [string, string] => typeof e[1] === 'string'))
+        resolve(new Response(Buffer.concat(chunks), { status: res.statusCode ?? 500, headers }))
+      })
+    })
+    req.on('error', reject)
+    const CHUNK = 64 * 1024
+    let sent = 0
+    init.onUpload(0)
+    const write = (): void => {
+      while (sent < body.length) {
+        const end = Math.min(sent + CHUNK, body.length)
+        const more = req.write(body.subarray(sent, end))
+        sent = end
+        init.onUpload(sent / body.length)
+        // Wait for the network to take it before sending more, so the progress is real.
+        if (!more) {
+          req.once('drain', write)
+          return
+        }
+      }
+      req.end()
+    }
+    write()
+  })
+}
+
+/** onUpload: for a body of bytes, how much of it has been sent (0–1), for a progress bar. */
+export async function send(path: string, init: RequestInit & { timeoutMs?: number; onUpload?: (fraction: number) => void } = {}): Promise<Response> {
   const url = marketUrl()
   const key = getSecret(KEY_SETTING)
   if (!url) throw new MarketError('Add the marketplace’s address in Settings → Marketplace first.', 0)
@@ -100,7 +141,11 @@ export async function send(path: string, init: RequestInit & { timeoutMs?: numbe
   const timer = setTimeout(() => ctrl.abort(), init.timeoutMs ?? TIMEOUT_MS)
   let res: Response
   try {
-    res = await fetch(`${url}${path}`, { ...init, signal: ctrl.signal, headers: { ...init.headers, authorization: `Bearer ${key}`, 'user-agent': 'Studywise' } })
+    const headers = { ...(init.headers as Record<string, string>), authorization: `Bearer ${key}`, 'user-agent': 'Studywise' }
+    res =
+      init.onUpload && init.body instanceof Uint8Array
+        ? await uploadWithProgress(`${url}${path}`, { method: init.method ?? 'POST', headers, body: init.body, signal: ctrl.signal, onUpload: init.onUpload })
+        : await fetch(`${url}${path}`, { ...init, signal: ctrl.signal, headers })
   } catch (e) {
     throw new MarketError(ctrl.signal.aborted ? 'The marketplace took too long to answer.' : `Couldn’t reach the marketplace at ${url}. ${(e as Error).message}`, 0)
   } finally {
@@ -112,7 +157,7 @@ export async function send(path: string, init: RequestInit & { timeoutMs?: numbe
   throw new MarketError(body?.error || `The marketplace answered ${res.status}.`, res.status, body)
 }
 
-export async function request<T>(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit & { timeoutMs?: number; onUpload?: (fraction: number) => void } = {}): Promise<T> {
   return (await (await send(path, init)).json()) as T
 }
 
@@ -167,19 +212,39 @@ export const publishedWeeks = published
  * Publish a week (its topics, cards, slides and transcripts). Publishing the
  * same week again replaces what you published before.
  */
-export async function publish(weekId: string): Promise<{ week: MarketWeek; replaced: boolean }> {
+/** "4.2 MB". */
+const mbText = (bytes: number) => `${(bytes / 1e6).toFixed(bytes < 1e7 ? 1 : 0)} MB`
+
+/**
+ * With a job's ctx, publishing shows its progress: packing the week, then
+ * uploading it (how much has gone up), as a progress bar.
+ */
+export async function publish(weekId: string, ctx?: JobContext): Promise<{ week: MarketWeek; replaced: boolean }> {
   const written = getDb().prepare("SELECT COUNT(*) n FROM topics WHERE week_id = ? AND status = 'ready'").get(weekId) as { n: number }
   if (!written.n) throw new Error('Write at least one of this week’s topics before publishing it.')
   if (isWeekPrivate(weekId)) throw new Error(privateWhy(weekId))
+  ctx?.meta({ weekId, publishing: true })
+  ctx?.live?.({ stage: 'Packing the week…', percent: 0 })
   const hash = weekContentHash(weekId)
-  const { bytes } = await weekZip(weekId)
+  const { bytes } = await weekZip(weekId, ctx && ((f) => ctx.live?.({ percent: 0.15 * f })))
+  const total = mbText(bytes.length)
+  let lastPct = -1
+  const onUpload = ctx
+    ? (f: number) => {
+        const pct = Math.floor(f * 100)
+        if (pct === lastPct) return
+        lastPct = pct
+        ctx.live?.({ stage: f < 1 ? `Uploading ${mbText(bytes.length * f)} of ${total}…` : 'Saving it on the marketplace…', percent: 0.15 + 0.83 * f })
+      }
+    : undefined
   const before = published()[weekId]
   const post = (replace?: string) =>
     request<{ week: MarketWeek }>(`/api/weeks${replace ? `?replace=${encodeURIComponent(replace)}` : ''}`, {
       method: 'POST',
       headers: { 'content-type': 'application/zip' },
       body: new Uint8Array(bytes),
-      timeoutMs: 10 * 60_000
+      timeoutMs: 10 * 60_000,
+      onUpload
     })
   let r: { week: MarketWeek }
   let replaced = !!before
@@ -196,9 +261,10 @@ export async function publish(weekId: string): Promise<{ week: MarketWeek; repla
     // Merged with other people's copies on the marketplace: add yours to the merged week instead of a new copy.
     const into = e instanceof MarketError && e.status === 409 ? e.data?.mergedInto : null
     if (typeof into !== 'string') throw e
-    r = await mergeInto([into], [bytes])
+    r = await mergeInto([into], [bytes], ctx)
     replaced = true
   }
+  ctx?.live?.({ stage: 'Published', percent: 1 })
   setSetting(PUBLISHED_SETTING, { ...published(), [weekId]: r.week.id })
   setPublishedHash(weekId, hash)
   linkCourse(r.week.courseId, weekId)
@@ -412,7 +478,8 @@ async function mergeInto(remoteIds: string[], extra: Buffer[] = [], ctx?: JobCon
       method: 'POST',
       headers: { 'content-type': 'application/zip' },
       body: new Uint8Array(bytes),
-      timeoutMs: 10 * 60_000
+      timeoutMs: 10 * 60_000,
+      onUpload: ctx && ((f) => ctx.live?.({ stage: f < 1 ? `Uploading the merged week (${Math.round(f * 100)}%)…` : 'Saving it on the marketplace…', percent: 0.8 + 0.18 * f }))
     })
   } catch (e) {
     // An older marketplace without merging answers its plain "Not found".
@@ -695,8 +762,11 @@ export async function similar(weekId: string): Promise<MarketMatch[]> {
 // ---------------------------------------------------------------------------
 // Publishing automatically (Settings → Marketplace)
 
-/** Wait this long after a topic finishes, so writing a whole week publishes it once. */
-export const AUTO_PUBLISH_DELAY_MS = 20_000
+/**
+ * A moment after a topic finishes, so topics finishing together publish the
+ * week once; it goes as soon as nothing in the week is still writing.
+ */
+export const AUTO_PUBLISH_DELAY_MS = 1_500
 const pending = new Map<string, ReturnType<typeof setTimeout>>()
 
 export const autoPublishOn = () => getSetting<boolean>(AUTO_PUBLISH_SETTING, false) === true
@@ -726,7 +796,7 @@ export function queueAutoPublish(weekId: string): void {
       if (!w || !autoPublishOn() || !isReady() || isWeekPrivate(weekId)) return
       // Already published as it is now (say a topic failed to write): nothing to upload.
       if (published()[weekId] && publishedHashes()[weekId] === weekContentHash(weekId)) return
-      startJob('other', `Publish ${w.name} · ${w.label}`, () => publish(weekId))
+      startJob('other', `Publish ${w.name} · ${w.label}`, (ctx) => publish(weekId, ctx))
     }, AUTO_PUBLISH_DELAY_MS)
   )
 }
