@@ -1,7 +1,7 @@
 {
   "name": "studywise-courses",
   "productName": "Studywise Courses",
-  "version": "1.15.1",
+  "version": "1.15.2",
   "description": "Bite-sized courses from your lecture slides and transcripts, plus flashcards and notes, powered by your local Claude Code.",
   "author": "Studywise",
   "license": "MIT",
