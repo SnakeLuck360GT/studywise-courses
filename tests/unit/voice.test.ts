@@ -34,6 +34,11 @@ describe('voice text', () => {
     expect(chunks.join(' ').replace(/\s+/g, ' ')).toBe(`${para} Short one. ${para}`.replace(/\s+/g, ' '))
     expect(voiceChunks('Hi.\n\nThere.', 500)).toEqual(['Hi.\n\nThere.'])
     expect(voiceChunks('   ')).toEqual([])
+    // The first piece is short so the audio starts quickly; the rest are full size.
+    const long = voiceChunks(`${para}\n\n${para}`)
+    expect(long[0].length).toBeLessThanOrEqual(400)
+    expect(long.slice(1).every((c) => c.length <= 2000)).toBe(true)
+    expect(long[1].length).toBeGreaterThan(400)
   })
 
   it('only accepts tagged text with the same words', () => {
@@ -120,6 +125,23 @@ describe('voice service (fake ElevenLabs)', () => {
     await expect(voice.speak('Something else.')).rejects.toThrow(/no voice with the ID abc123XYZ/)
     expect(() => voice.setVoiceConfig({ voiceId: 'not a voice!' })).toThrow(/voice ID/)
     expect(() => voice.setVoiceConfig({ model: 'eleven_v9' })).toThrow(/Unknown/)
+  })
+
+  it('reads the plain text when tagging is cancelled, and cancelling stops a request', async () => {
+    expect(await voice.addTags('Plain words.', 'calm', { signal: AbortSignal.abort() })).toBe('Plain words.')
+    // ElevenLabs that never answers until it's cancelled.
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      return new Promise((_res, rej) => init?.signal?.addEventListener('abort', () => rej(new Error('aborted'))))
+    })
+    const p = voice.speak('A card nobody waits for.', { requestId: 'r1' })
+    await new Promise((r) => setTimeout(r, 50))
+    voice.cancelSpeak('r1')
+    await expect(p).rejects.toThrow()
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      return reply(url)
+    })
   })
 
   it('lists your voices by name', async () => {

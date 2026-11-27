@@ -112,21 +112,59 @@ export async function listVoices(): Promise<VoiceOption[]> {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** Claude adds audio tags, or the text comes back as it was when that fails or changes any words. */
-export async function addTags(text: string, prompt: string): Promise<string> {
+/** How long auto-tagging may take before the plain text is read instead. */
+export const TAG_DEADLINE_MS = { first: 12_000, later: 45_000 }
+
+/**
+ * Claude adds audio tags, or the text comes back as it was: when that fails,
+ * changes any words, or isn't back by the deadline (a slow model shouldn't
+ * keep you waiting for the voice). It skips the AI job queue: it's one small
+ * call, and a card shouldn't wait behind a week being planned.
+ */
+export async function addTags(text: string, prompt: string, opts: { signal?: AbortSignal; deadlineMs?: number } = {}): Promise<string> {
+  if (opts.signal?.aborted) return text
+  const ctl = new AbortController()
+  const stop = () => ctl.abort()
+  opts.signal?.addEventListener('abort', stop)
+  const timer = setTimeout(stop, opts.deadlineMs ?? TAG_DEADLINE_MS.later)
   try {
-    const r = await runAI<string>({ task: 'voice_tag', vars: { voice_prompt: prompt, text } })
+    const call = runAI<string>({ task: 'voice_tag', vars: { voice_prompt: prompt, text }, signal: ctl.signal, noQueue: true, timeoutMs: opts.deadlineMs ?? TAG_DEADLINE_MS.later })
+    const late = new Promise<null>((resolve) => ctl.signal.addEventListener('abort', () => resolve(null)))
+    const r = await Promise.race([call, late])
+    call.catch(() => {})
+    if (!r) return text
     const tagged = r.text.trim().replace(/^```\w*\n?|\n?```$/g, '').trim()
     return onlyTagsAdded(text, tagged) ? tagged : text
   } catch {
     return text
+  } finally {
+    clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', stop)
   }
+}
+
+/** Requests the page may cancel (it moved on to another card), by its request id. */
+const inFlight = new Map<string, AbortController>()
+
+export function cancelSpeak(requestId: string): void {
+  inFlight.get(requestId)?.abort()
+  inFlight.delete(requestId)
 }
 
 const cacheDir = () => join(paths.cache, 'voice')
 
 /** One piece of text (at most VOICE_CHUNK characters) as speech: an mp3 data URL. */
-export async function speak(text: string, opts: { model?: string; voiceId?: string } = {}): Promise<{ audio: string }> {
+export async function speak(text: string, opts: { model?: string; voiceId?: string; requestId?: string; first?: boolean } = {}): Promise<{ audio: string }> {
+  const ctl = new AbortController()
+  if (opts.requestId) inFlight.set(opts.requestId, ctl)
+  try {
+    return await speakOnce(text, opts, ctl.signal)
+  } finally {
+    if (opts.requestId) inFlight.delete(opts.requestId)
+  }
+}
+
+async function speakOnce(text: string, opts: { model?: string; voiceId?: string; first?: boolean }, signal: AbortSignal): Promise<{ audio: string }> {
   const t = text.trim().slice(0, VOICE_CHUNK + 200)
   if (!t) throw new Error('Nothing to read out.')
   const st = voiceStatus()
@@ -138,12 +176,13 @@ export async function speak(text: string, opts: { model?: string; voiceId?: stri
   if (existsSync(file)) return { audio: `data:audio/mpeg;base64,${readFileSync(file).toString('base64')}` }
   if (isOffline()) throw new Error('Voice mode needs a connection for anything you haven’t heard before. Turn offline mode off to hear it.')
   const k = needKey()
-  const spoken = tags ? await addTags(t, st.prompt) : t
+  const spoken = tags ? await addTags(t, st.prompt, { signal, deadlineMs: opts.first ? TAG_DEADLINE_MS.first : TAG_DEADLINE_MS.later }) : t
+  if (signal.aborted) throw new Error('Stopped.')
   const res = await fetch(`${API}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
     method: 'POST',
     headers: { 'xi-api-key': k, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
     body: JSON.stringify({ text: spoken, model_id: model }),
-    signal: AbortSignal.timeout(90_000)
+    signal: AbortSignal.any([signal, AbortSignal.timeout(90_000)])
   })
   if (!res.ok) throw await apiError(res, voiceId)
   const audio = Buffer.from(await res.arrayBuffer())

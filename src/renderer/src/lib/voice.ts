@@ -47,6 +47,8 @@ export const useSpeaking = () => useSyncExternalStore(subscribe, () => speaking)
 let run = 0
 let audio: HTMLAudioElement | null = null
 let endPlayback: (() => void) | null = null
+/** Audio still being made for what's playing: cancelled when it stops, so it doesn't hold up the next card. */
+const pending = new Set<string>()
 
 function setSpeaking(s: typeof speaking): void {
   speaking = s
@@ -55,6 +57,8 @@ function setSpeaking(s: typeof speaking): void {
 
 export function stopVoice(): void {
   run++
+  for (const requestId of pending) void api.voice.cancel({ requestId }).catch(() => {})
+  pending.clear()
   audio?.pause()
   audio = null
   endPlayback?.()
@@ -83,12 +87,14 @@ export async function speak(markdown: string, key: string, opts: { quiet?: boole
   const chunks = voiceChunks(speakableText(markdown))
   if (!chunks.length) return
   setSpeaking({ key, loading: true })
-  const fetchChunk = (text: string) => {
-    const p = api.voice.speak({ text })
-    p.catch(() => {}) // fetched ahead and maybe never awaited
+  const fetchChunk = (text: string, first: boolean) => {
+    const requestId = crypto.randomUUID()
+    pending.add(requestId)
+    const p = api.voice.speak({ text, requestId, first })
+    p.catch(() => {}).finally(() => pending.delete(requestId)) // fetched ahead and maybe never awaited
     return p
   }
-  let next = fetchChunk(chunks[0])
+  let next = fetchChunk(chunks[0], true)
   for (let i = 0; i < chunks.length; i++) {
     let r: { audio: string }
     try {
@@ -101,7 +107,7 @@ export async function speak(markdown: string, key: string, opts: { quiet?: boole
       return
     }
     if (my !== run) return
-    if (i + 1 < chunks.length) next = fetchChunk(chunks[i + 1])
+    if (i + 1 < chunks.length) next = fetchChunk(chunks[i + 1], false)
     setSpeaking({ key, loading: false })
     await play(r.audio)
     if (my !== run) return

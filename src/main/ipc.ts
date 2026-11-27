@@ -832,9 +832,19 @@ export const handlers = {
       (i) => voice.setVoiceConfig(i)
     ),
     voices: h(none, () => voice.listVoices()),
-    speak: h(z.object({ text: z.string().min(1).max(5000), model: z.string().max(100).optional(), voiceId: z.string().max(100).optional() }), (i) =>
-      voice.speak(i.text, { model: i.model, voiceId: i.voiceId })
-    )
+    speak: h(
+      z.object({
+        text: z.string().min(1).max(5000),
+        model: z.string().max(100).optional(),
+        voiceId: z.string().max(100).optional(),
+        /** Lets the page cancel it (voice.cancel) when it moves on. */
+        requestId: z.string().max(64).optional(),
+        /** The first piece of a card: auto-tagging gets less time, so it starts playing sooner. */
+        first: z.boolean().optional()
+      }),
+      (i) => voice.speak(i.text, { model: i.model, voiceId: i.voiceId, requestId: i.requestId, first: i.first })
+    ),
+    cancel: h(z.object({ requestId: z.string().max(64) }), (i) => voice.cancelSpeak(i.requestId))
   },
 
   ai: {

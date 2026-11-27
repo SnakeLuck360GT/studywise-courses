@@ -186,6 +186,7 @@ export const CHANNELS = [
   'voice.setConfig',
   'voice.voices',
   'voice.speak',
+  'voice.cancel',
   'ai.status',
   'ai.setProvider',
   'ai.calls',

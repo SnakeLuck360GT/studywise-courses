@@ -90,34 +90,40 @@ export function speakableText(md: string): string {
   )
 }
 
-/** Longest piece sent to ElevenLabs at once: well under every model's limit, and the first piece starts playing sooner. */
+/** Longest piece sent to ElevenLabs at once: well under every model's limit. */
 export const VOICE_CHUNK = 2000
+/** The first piece is short, so the audio starts quickly; the rest are fetched while it plays. */
+export const VOICE_FIRST_CHUNK = 400
 
-/** The text split into pieces of at most `max` characters, at paragraph, then sentence, then word breaks. */
-export function voiceChunks(text: string, max = VOICE_CHUNK): string[] {
+/**
+ * The text split into pieces at paragraph, then sentence, then word breaks:
+ * the first at most `first` characters, the rest at most `max`.
+ */
+export function voiceChunks(text: string, max = VOICE_CHUNK, first = VOICE_FIRST_CHUNK): string[] {
+  // Every sentence (or word, in a sentence too long to keep whole), with what goes before it.
+  const units: { text: string; sep: string }[] = []
+  const unitMax = Math.min(max, first)
+  for (const para of text.split(/\n{2,}/)) {
+    let sep = '\n\n'
+    for (const sentence of para.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) ?? [para]) {
+      const t = sentence.trim()
+      if (!t) continue
+      if (t.length <= unitMax) units.push({ text: t, sep })
+      else t.split(/\s+/).forEach((w, i) => units.push({ text: w, sep: i ? ' ' : sep }))
+      sep = ' '
+    }
+  }
   const out: string[] = []
   let cur = ''
-  const push = () => {
-    if (cur.trim()) out.push(cur.trim())
-    cur = ''
-  }
-  const add = (piece: string, sep: string) => {
-    if (cur && cur.length + sep.length + piece.length > max) push()
-    cur = cur ? cur + sep + piece : piece
-  }
-  for (const para of text.split(/\n{2,}/)) {
-    if (para.length <= max) {
-      add(para, '\n\n')
-      continue
+  for (const u of units) {
+    const limit = out.length ? max : first
+    if (cur && cur.length + u.sep.length + u.text.length > limit) {
+      out.push(cur)
+      cur = ''
     }
-    push()
-    for (const sentence of para.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) ?? [para]) {
-      if (sentence.length <= max) add(sentence.trim(), ' ')
-      else for (const word of sentence.split(/\s+/)) add(word, ' ')
-    }
-    push()
+    cur = cur ? cur + u.sep + u.text : u.text
   }
-  push()
+  if (cur) out.push(cur)
   return out
 }
 
