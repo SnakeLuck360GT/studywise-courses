@@ -9,7 +9,7 @@ import { canMergeNow } from '../lib/courseFlows'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
 import { MarketSetup } from '../components/MarketSetup'
-import { FinishButton, MissingWeeksPanel, RequestsView, WeekStrip } from '../components/MarketRequests'
+import { FinishButton, MissingWeeksBanner, MissingWeeksTab, RequestsView, WeekStrip } from '../components/MarketRequests'
 import { Button, Card, Empty, Input, Menu, MenuItem, Pill, Segmented, Spinner, cx } from '../components/ui'
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -49,7 +49,7 @@ export function Market({ courseId }: { courseId?: string }) {
 
 function MarketList() {
   const go = useStore((s) => s.go)
-  const [view, setView] = useState<'all' | 'mine'>('all')
+  const [view, setView] = useState<'all' | 'missing' | 'mine'>('all')
   // Bumped when the missing weeks panel has loaded (it may have just asked for some), so the wanted list shows them.
   const [wanted, setWanted] = useState(0)
   const [q, setQ] = useState('')
@@ -87,6 +87,7 @@ function MarketList() {
               onChange={setView}
               options={[
                 { value: 'all', label: 'All courses' },
+                { value: 'missing', label: 'Missing weeks' },
                 { value: 'mine', label: 'Published by you' }
               ]}
             />
@@ -97,12 +98,14 @@ function MarketList() {
       </PageTitle>
       {view === 'mine' ? (
         <MyWeeks />
+      ) : view === 'missing' ? (
+        <MissingWeeksTab />
       ) : (
         <>
-          {/* Your missing weeks, tasks and what people are asking for come first; searching shows just the courses. */}
+          {/* A line about your missing weeks (their own tab), then tasks and what people are asking for; searching shows just the courses. */}
           {!q && (
             <div className="mb-10 flex flex-col gap-8">
-              <MissingWeeksPanel onLoaded={() => setWanted((n) => n + 1)} />
+              <MissingWeeksBanner onOpen={() => setView('missing')} onLoaded={() => setWanted((n) => n + 1)} />
               <section>
                 <h2 className="mb-3 text-[1.15rem] font-semibold">Wanted weeks</h2>
                 <RequestsView key={wanted} compact />

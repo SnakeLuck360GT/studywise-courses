@@ -67,6 +67,8 @@ export interface MarketCourse {
   updatedAt: string
   /** You've published a week of it. */
   mine: boolean
+  /** Week numbers a marketplace admin marked as having no content (no lectures), like reading week. Missing from older marketplaces. */
+  noContent?: number[]
 }
 
 export interface MarketCourseFull extends MarketCourse {
@@ -288,6 +290,10 @@ export interface WeekRequest {
   doneBy: string[]
   /** "write": who published the week being finished. */
   weekAuthor: string | null
+  /** Made partway (someone ran out of limit): weekId is that week, toWrite what's left. Missing from older marketplaces. */
+  partial?: boolean
+  /** Who has written some of it so far. */
+  partBy?: string[]
   votes: number
   voted: boolean
   mine: boolean
@@ -311,7 +317,8 @@ export interface WeekRequest {
 export interface MarketTask {
   id: string
   /** beaten: someone else made it first. expired: not started in time, so it went back. */
-  status: 'assigned' | 'started' | 'done' | 'skipped' | 'expired' | 'beaten' | 'gone'
+  /** released: given back unstarted when you chose to make another week instead. */
+  status: 'assigned' | 'started' | 'done' | 'skipped' | 'expired' | 'beaten' | 'gone' | 'released'
   day: string
   startedAt: string | null
   request: WeekRequest | null

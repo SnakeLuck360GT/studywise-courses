@@ -75,9 +75,20 @@ export function disconnect(): void {
 }
 
 /** Who the key belongs to. */
-export async function test(): Promise<{ user: string }> {
-  const r = await request<{ user: { name: string } }>('/api/app/me')
-  return { user: r.user.name }
+/** owner: a marketplace admin (they can mark weeks of a course as having no content). */
+export async function test(): Promise<{ user: string; owner: boolean }> {
+  const r = await request<{ user: { name: string; owner?: boolean } }>('/api/app/me')
+  return { user: r.user.name, owner: !!r.user.owner }
+}
+
+/** Admins: mark a week number of a marketplace course as having no content (no lectures), or not. */
+export async function setNoContent(courseId: string, number: number, on: boolean): Promise<number[]> {
+  try {
+    return (await request<{ noContent: number[] }>(`/api/courses/${encodeURIComponent(courseId)}/no-content`, json({ number, on }))).noContent
+  } catch (e) {
+    if (e instanceof MarketError && e.status === 404 && /^not found$/i.test(e.message)) throw new Error(`${new URL(marketUrl()).host} needs updating to the latest studywise-server for this.`)
+    throw e
+  }
 }
 
 export class MarketError extends Error {

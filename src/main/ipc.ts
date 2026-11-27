@@ -465,6 +465,8 @@ export const handlers = {
       const w = c.weeks.find((x) => x.id === i.weekId)!
       return startJob('course_outline', `Plan: ${c.name} · ${w.label}`, async (ctx) => {
         const r: { topics: number; test?: number; testError?: string } = await course.planWeek(i.weekId, ctx, i.instructions)
+        // Not started writing a minute from now: asked for help on the marketplace (when automatic requests are on).
+        setTimeout(() => void marketTasks.autoAskPlanned().catch(() => 0), marketTasks.PLANNED_GRACE_MS + 2_000)
         if (!i.test) return r
         // The topics are in either way: a test that doesn't work out is reported, not a failed plan.
         try {
@@ -690,6 +692,8 @@ export const handlers = {
     /** Upload slides for a requested week (picked with app.pickFiles). */
     addRequestFiles: h(z.object({ id, files: z.array(z.string()).min(1).max(60) }), (i) => marketTasks.addRequestFiles(i.id, i.files)),
     removeRequestFile: h(z.object({ id, fileId: id }), (i) => marketTasks.removeRequestFile(i.id, i.fileId)),
+    /** Admins: mark a week of a marketplace course as having no content (no lectures), so it's never asked for or handed out. */
+    setNoContent: h(z.object({ courseId: id, number: z.number().int().min(1).max(12), on: z.boolean() }), (i) => market.setNoContent(i.courseId, i.number, i.on)),
     /** Your courses' missing weeks (asked for automatically unless that's off), and requests for your courses that need slides. */
     missing: h(none, () => marketTasks.missingWeeks()),
     setAutoRequest: h(z.object({ on: z.boolean() }), (i) => marketTasks.setAutoRequest(i.on)),
@@ -701,6 +705,11 @@ export const handlers = {
     task: h(none, () => marketTasks.todayTask()),
     skipTask: h(z.object({ id }), (i) => marketTasks.skipTask(i.id)),
     setTasks: h(z.object({ on: z.boolean() }), (i) => marketTasks.setTasksOn(i.on)),
+    /** Make a wanted week now (anyone's): it becomes your task, made with your AI and published (a job). */
+    make: h(z.object({ id, title: z.string().max(300) }), async (i) => {
+      const task = await marketTasks.takeRequest(i.id)
+      return startJob('other', `Task: ${i.title}`, (ctx) => marketTasks.runTask(task.id, ctx))
+    }),
     /** Make today's task with your AI and publish it (a job). */
     startTask: h(z.object({ id, title: z.string().max(300) }), (i) => startJob('other', `Task: ${i.title}`, (ctx) => marketTasks.runTask(i.id, ctx))),
     /** Add the weeks you asked for that are done now (it also runs after each cloud sync). */

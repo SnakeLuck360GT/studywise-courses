@@ -28,6 +28,10 @@ const state = {
   requests: [] as WeekRequest[],
   asks: 0,
   uploads: [] as string[],
+  /** Marketplace courses (with the weeks an admin marked as having no content), and no-content marks sent. */
+  courses: [] as { id: string; name: string; module: string; noContent: number[] }[],
+  marks: [] as unknown[],
+  plans: [] as string[],
   /** Week numbers that are on the marketplace already. */
 }
 
@@ -77,12 +81,19 @@ function fakeMarket(): Promise<string> {
       if (t[2] === 'done') state.done.push({ id: t[1], body: JSON.parse(body.toString() || '{}') })
       return send({ task: state.task })
     }
-    if (p.startsWith('/api/requests/a1b2c3d4e5f60718/files/')) {
+    if (/^\/api\/requests\/\w+\/files\/\w+$/.test(p) && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/octet-stream' })
       return res.end(readFileSync(PDF))
     }
     if (p === '/api/requests/mine') return send({ requests: state.mine })
     if (p === '/api/requests' && req.method === 'GET') return send({ requests: state.requests })
+    if (p === '/api/courses' && req.method === 'GET') return send({ courses: state.courses })
+    const nc = p.match(/^\/api\/courses\/(\w+)\/no-content$/)
+    if (nc) {
+      const b = JSON.parse(body.toString()) as { number: number; on: boolean }
+      state.marks.push({ course: nc[1], ...b })
+      return send({ noContent: b.on ? [b.number] : [] })
+    }
     if (p === '/api/requests' && req.method === 'POST') {
       state.asks++
       const b = JSON.parse(body.toString()) as { number: number; course: { name: string } }
@@ -90,6 +101,16 @@ function fakeMarket(): Promise<string> {
       const r = request({ id: `${'0'.repeat(15)}${state.requests.length + 1}`, course: b.course.name, number: b.number, label: `Week ${b.number}`, files: [], ready: false, votes: 1, voted: true, mine: true, inProgress: false, yours: false })
       state.requests.push(r)
       return send({ request: r })
+    }
+    const plan = p.match(/^\/api\/requests\/(\w+)\/plan$/)
+    if (plan && req.method === 'POST') {
+      state.plans.push(plan[1])
+      return send({ request: state.requests.find((r) => r.id === plan[1]) ?? request() })
+    }
+    const take = p.match(/^\/api\/requests\/(\w+)\/take$/)
+    if (take) {
+      state.task = { id: 'taken1', status: 'started', day: '2026-11-27', startedAt: '2026-11-27T10:00:00.000Z', request: state.requests.find((r) => r.id === take[1]) ?? request() }
+      return send({ task: state.task })
     }
     const up = p.match(/^\/api\/requests\/(\w+)\/files$/)
     if (up && req.method === 'POST') {
@@ -244,6 +265,60 @@ describe('publishing', () => {
   }, 30_000)
 })
 
+describe('making a week partway', () => {
+  it('publishes the topics written when it stops partway, and says the task is done', async () => {
+    const tasks = await import('../../src/main/services/marketTasks')
+    const course = await import('../../src/main/services/course')
+    state.me = 'quin'
+    state.published = null
+    state.done = []
+    state.task = { id: 'task2', status: 'assigned', day: '2026-11-27', startedAt: null, request: request({ id: 'b1b2c3d4e5f60718', course: 'Partial 101', number: 2, label: 'Week 2' }) }
+    const stop = new AbortController()
+    const ctx = {
+      signal: stop.signal,
+      // Out of limit (here: stopped) once the first topic is written.
+      progress: (m: string) => /^Writing topic 2 of/.test(m) && stop.abort(),
+      delta: () => {},
+      meta: () => {}
+    }
+    await expect(tasks.runTask('task2', ctx)).rejects.toThrow(/Cancelled/)
+    const c = course.listCourses().find((x) => x.name === 'Partial 101')!
+    const topics = course.getCourse(c.id).weeks[0].topics
+    expect(topics.filter((t) => t.status === 'ready')).toHaveLength(1)
+    // What was written went up, and the marketplace was told.
+    expect(state.published).toBeTruthy()
+    expect(state.done).toEqual([{ id: 'task2', body: { weekId: 'feedfacefeedface' } }])
+  }, 60_000)
+
+  it('makes a wanted week now instead of waiting for it as a task', async () => {
+    const tasks = await import('../../src/main/services/marketTasks')
+    state.requests = [request({ id: 'c1c2c3d4e5f60718' })]
+    const t = await tasks.takeRequest('c1c2c3d4e5f60718')
+    expect([t.id, t.status, t.request?.id]).toEqual(['taken1', 'started', 'c1c2c3d4e5f60718'])
+  })
+
+  it('asks for help with a week planned over a minute ago that nobody has started writing, with its plan', async () => {
+    const tasks = await import('../../src/main/services/marketTasks')
+    const course = await import('../../src/main/services/course')
+    const { getDb } = await import('../../src/main/db')
+    const c = course.createCourse({ name: 'Planned 101', level: '' })
+    const w = course.addWeek(c.id, 'Week 3')
+    await course.addFiles(w.id, [PDF])
+    await course.planWeek(w.id, { signal: new AbortController().signal, progress: () => {}, delta: () => {}, meta: () => {} })
+    state.requests = []
+    state.plans = []
+    // Just planned: left alone for a minute.
+    await tasks.autoAskPlanned()
+    expect(state.plans).toEqual([])
+    getDb().prepare('UPDATE topics SET updated_at = ? WHERE week_id = ?').run(new Date(Date.now() - 2 * 60_000).toISOString(), w.id)
+    expect(await tasks.autoAskPlanned()).toBe(1)
+    expect(state.requests.map((r) => [r.course, r.number])).toEqual([['Planned 101', 3]])
+    expect(state.plans).toEqual([state.requests[0].id])
+    // Asked once.
+    expect(await tasks.autoAskPlanned()).toBe(0)
+  }, 60_000)
+})
+
 describe('your missing weeks', () => {
   it('asks for gaps up to your latest week once, offers ones on the marketplace, and shares your slides', async () => {
     const tasks = await import('../../src/main/services/marketTasks')
@@ -287,6 +362,21 @@ describe('your missing weeks', () => {
     expect(off.missing.filter((m) => m.courseId === d.id).map((m) => [m.number, m.request])).toEqual([[1, null]])
     expect(state.asks).toBe(asks)
     tasks.setAutoRequest(true)
+  })
+
+  it('skips weeks an admin marked as having no content, and admins can mark them', async () => {
+    const tasks = await import('../../src/main/services/marketTasks')
+    const market = await import('../../src/main/services/market')
+    const course = await import('../../src/main/services/course')
+    const c = course.createCourse({ name: 'Quiet 303', level: '' })
+    course.addWeek(c.id, 'Week 4')
+    state.courses = [{ id: '9999aaaa9999aaaa', name: 'Quiet 303', module: '', noContent: [2, 3] }]
+    const info = await tasks.missingWeeks()
+    // Weeks 1 to 4, without reading week, without the ones with no content.
+    expect(info.missing.filter((m) => m.courseId === c.id).map((m) => m.number)).toEqual([1, 4])
+    expect(await market.setNoContent('9999aaaa9999aaaa', 7, true)).toEqual([7])
+    expect(state.marks).toEqual([{ course: '9999aaaa9999aaaa', number: 7, on: true }])
+    state.courses = []
   })
 })
 

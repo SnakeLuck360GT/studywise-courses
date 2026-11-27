@@ -3,7 +3,7 @@
 // course, and today's task on Home.
 
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarCheck, Check, FileText, HandHeart, Paperclip, Plus, Sparkles, ThumbsUp, Trash2, X } from 'lucide-react'
+import { CalendarCheck, CalendarX, Check, ChevronRight, FileText, HandHeart, Paperclip, Plus, Sparkles, ThumbsUp, Trash2, X } from 'lucide-react'
 import { READING_WEEK, TEACHING_WEEKS, WEEKS_PER_MODULE, requestTitle, usageText, weekNumber, type MarketTask, type MarketWeek, type MissingInfo, type MissingWeek, type SlidesWanted, type UsageRate, type WeekRequest } from '@shared/market'
 import { api, errorText } from '../lib/api'
 import { addMarketWeek, downloadMarketCourse } from '../lib/market'
@@ -25,6 +25,7 @@ export function requestEstimate(r: Pick<WeekRequest, 'toWrite'>, rate: UsageRate
 
 /** What there is to make it from. */
 function materialText(r: WeekRequest): string {
+  if (r.partial && r.toWrite) return `Made partway by ${(r.partBy ?? []).join(', ')}: ${plural(r.toWrite.topics, 'topic')} left to write`
   if (r.kind === 'write') return r.toWrite ? `${plural(r.toWrite.topics, 'topic')} left to write` : 'Topics left to write'
   if (r.plan) return `Planned already (${plural(r.plan.topics, 'topic')}), nothing written`
   if (r.files.length) return `${plural(r.files.length, 'file')} to make it from`
@@ -54,6 +55,28 @@ async function startTask(t: MarketTask): Promise<boolean> {
   try {
     await api.market.startTask({ id: t.id, title: `${r.course} · ${r.kind === 'write' ? `the rest of ${r.label}` : r.label}` })
     toast(`Making ${requestTitle(r)}. It goes on the marketplace when it’s done; you can follow it in Jobs.`, 'info')
+    return true
+  } catch (e) {
+    toast(errorText(e), 'bad')
+    return false
+  }
+}
+
+/** Someone can make it now: it has something to make it from, isn't done, and nobody else is on it. */
+const canMake = (r: WeekRequest) => r.status === 'open' && r.ready && (!r.inProgress || r.yours)
+
+/** Make a wanted week now (anyone's) with your AI, instead of waiting to be given it. */
+async function makeNow(r: WeekRequest, rate: UsageRate | null): Promise<boolean> {
+  const estimate = requestEstimate(r, rate)
+  const ok = await confirmDialog(
+    `Make ${requestTitle(r)} now?`,
+    `It’s written with your own AI, topic by topic, and published for everyone who wants it; it goes into your courses too.${estimate ? ` It should take ${estimate}.` : ''} If you run out of limit partway, that’s fine: the topics written still go up, and the rest goes back for someone else.`,
+    { confirmText: 'Make it' }
+  )
+  if (!ok) return false
+  try {
+    await api.market.make({ id: r.id, title: `${r.course} · ${r.kind === 'write' || r.partial ? `the rest of ${r.label}` : r.label}` })
+    toast(`Making ${requestTitle(r)}. You can follow it in Jobs.`, 'info')
     return true
   } catch (e) {
     toast(errorText(e), 'bad')
@@ -261,7 +284,8 @@ function TaskSettings({ rate }: { rate: UsageRate | null }) {
     skipped: 'You skipped today’s task. The next one comes tomorrow.',
     beaten: 'Someone else made today’s week first. The next one comes tomorrow.',
     expired: '',
-    gone: ''
+    gone: '',
+    released: ''
   }
   return (
     <div className="rounded-xl border border-line bg-surface p-4">
@@ -359,6 +383,11 @@ function RequestRow({ r, rate, onChange }: { r: WeekRequest; rate: UsageRate | n
             Add to my courses
           </Button>
         )}
+        {canMake(r) && (
+          <Button size="sm" variant="primary" onClick={() => void makeNow(r, rate).then((ok) => ok && onChange())} title="Donate your AI usage: make it now">
+            <Sparkles className="size-4" /> Make it
+          </Button>
+        )}
         {!done && r.kind === 'week' && !r.plan && (
           <Button size="sm" variant={r.ready ? 'ghost' : 'primary'} loading={busy === 'files'} onClick={() => void addFiles()} title="Upload the lecture slides, transcripts or readings for this week">
             <Paperclip className="size-4" /> Add slides
@@ -406,7 +435,7 @@ function RequestRow({ r, rate, onChange }: { r: WeekRequest; rate: UsageRate | n
 // Asking for a week
 
 /** Pick a course (yours, the marketplace's, or a new name) and a week, and optionally its slides. */
-function AskDialog({ open, onClose, onAsked, course: fixed }: { open: boolean; onClose: () => void; onAsked: () => void; course?: { id: string; name: string; weeks: number[] } }) {
+function AskDialog({ open, onClose, onAsked, course: fixed }: { open: boolean; onClose: () => void; onAsked: () => void; course?: { id: string; name: string; weeks: number[]; noContent?: number[] } }) {
   const [name, setName] = useState('')
   const [number, setNumber] = useState<number | null>(null)
   const [files, setFiles] = useState<string[]>([])
@@ -469,13 +498,13 @@ function AskDialog({ open, onClose, onAsked, course: fixed }: { open: boolean; o
           <div className="grid grid-cols-6 gap-1.5">
             {Array.from({ length: WEEKS_PER_MODULE }, (_, i) => i + 1).map((n) => {
               const reading = n === READING_WEEK
-              const there = fixed?.weeks.includes(n)
+              const there = fixed?.weeks.includes(n) || fixed?.noContent?.includes(n)
               return (
                 <button
                   key={n}
                   disabled={reading || there}
                   onClick={() => setNumber(n)}
-                  title={reading ? 'Reading week: nothing to make' : there ? 'On the marketplace already' : `Week ${n}`}
+                  title={reading ? 'Reading week: nothing to make' : fixed?.noContent?.includes(n) ? 'No content this week' : there ? 'On the marketplace already' : `Week ${n}`}
                   className={cx(
                     'rounded-lg border py-2 text-[0.9rem] font-medium tabular transition-colors',
                     number === n ? 'border-accent bg-accent text-white' : 'border-line hover:bg-surface-2',
@@ -514,10 +543,30 @@ function AskDialog({ open, onClose, onAsked, course: fixed }: { open: boolean; o
  * people have asked for (vote with a click), and which nobody has (ask with a
  * click). Week 6 is reading week.
  */
-export function WeekStrip({ course, weeks, onChange }: { course: { id: string; name: string }; weeks: MarketWeek[]; onChange?: () => void }) {
+export function WeekStrip({ course, weeks, onChange }: { course: { id: string; name: string; noContent?: number[] }; weeks: MarketWeek[]; onChange?: () => void }) {
   const version = useStore((s) => s.version)
   const [requests, setRequests] = useState<WeekRequest[]>([])
   const [asking, setAsking] = useState(false)
+  // Weeks with no content (no lectures): set by marketplace admins, who get a mode to mark them.
+  const [none, setNone] = useState<number[]>(course.noContent ?? [])
+  useEffect(() => setNone(course.noContent ?? []), [course.id, course.noContent?.join(',')])
+  const [admin, setAdmin] = useState(false)
+  const [marking, setMarking] = useState(false)
+  useEffect(() => {
+    void api.market
+      .test()
+      .then((r) => setAdmin(r.owner))
+      .catch(() => setAdmin(false))
+  }, [])
+  const mark = async (n: number) => {
+    try {
+      setNone(await api.market.setNoContent({ courseId: course.id, number: n, on: !none.includes(n) }))
+      load()
+      onChange?.()
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    }
+  }
   const load = () =>
     void api.market
       .requests({ courseId: course.id })
@@ -526,7 +575,7 @@ export function WeekStrip({ course, weeks, onChange }: { course: { id: string; n
   useEffect(load, [course.id, version])
   const have = new Set(weeks.map((w) => weekNumber(w.label)).filter((n): n is number => n !== null))
   const asked = new Map(requests.filter((r) => r.kind === 'week' && r.status === 'open' && r.number !== null).map((r) => [r.number!, r]))
-  const missing = TEACHING_WEEKS.filter((n) => !have.has(n))
+  const missing = TEACHING_WEEKS.filter((n) => !have.has(n) && !none.includes(n))
   const toggle = async (r: WeekRequest) => {
     try {
       await api.market.vote({ id: r.id, on: !r.voted })
@@ -539,13 +588,42 @@ export function WeekStrip({ course, weeks, onChange }: { course: { id: string; n
     <div className="mb-5 rounded-xl border border-line bg-surface p-4">
       <div className="mb-2 flex flex-wrap items-baseline gap-x-3">
         <h3 className="font-semibold">Weeks</h3>
-        <span className="text-[0.86rem] text-muted">
-          {missing.length ? `${plural(missing.length, 'week')} not here yet. Click one to ask for it, or to vote for it if someone has.` : 'Every teaching week is here.'}
+        <span className="min-w-0 flex-1 text-[0.86rem] text-muted">
+          {marking
+            ? 'Click the weeks with no content (no lectures). Nobody can ask for them, and they’re never handed out.'
+            : missing.length
+              ? `${plural(missing.length, 'week')} not here yet. Click one to ask for it, or to vote for it if someone has.`
+              : 'Every teaching week is here.'}
         </span>
+        {admin && (
+          <Button size="sm" variant={marking ? 'primary' : 'ghost'} onClick={() => setMarking(!marking)} title="Admins: mark weeks of this course that have no content">
+            {marking ? 'Done' : 'Mark weeks with no content'}
+          </Button>
+        )}
       </div>
       <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-12">
         {Array.from({ length: WEEKS_PER_MODULE }, (_, i) => i + 1).map((n) => {
           const r = asked.get(n)
+          if (marking && !have.has(n) && n !== READING_WEEK)
+            return (
+              <button
+                key={n}
+                onClick={() => void mark(n)}
+                aria-pressed={none.includes(n)}
+                className={cx('rounded-lg border py-2 text-center text-[0.75rem] transition-colors', none.includes(n) ? 'border-ink/40 bg-surface-2 text-ink' : 'border-dashed border-line text-muted hover:bg-surface-2')}
+                title={none.includes(n) ? `Week ${n} has no content. Click to undo.` : `Mark week ${n} as having no content`}
+              >
+                <div className="text-[0.9rem] font-medium tabular">{n}</div>
+                {none.includes(n) ? 'No content' : 'Has content'}
+              </button>
+            )
+          if (none.includes(n) && !have.has(n))
+            return (
+              <div key={n} className="rounded-lg border border-dashed border-line py-2 text-center text-[0.75rem] text-muted" title="No content this week (no lectures)">
+                <div className="text-[0.9rem] font-medium tabular">{n}</div>
+                No content
+              </div>
+            )
           if (n === READING_WEEK && !have.has(n))
             return (
               <div key={n} className="rounded-lg border border-dashed border-line py-2 text-center text-[0.75rem] text-muted" title="Reading week">
@@ -586,7 +664,7 @@ export function WeekStrip({ course, weeks, onChange }: { course: { id: string; n
           load()
           onChange?.()
         }}
-        course={{ id: course.id, name: course.name, weeks: [...have] }}
+        course={{ id: course.id, name: course.name, weeks: [...have], noContent: none }}
       />
     </div>
   )
@@ -637,7 +715,59 @@ export function FinishButton({ week, request, onChange }: { week: MarketWeek; re
  * an Add when they're on the marketplace already. Below them, weeks of your
  * courses others asked for that still need slides.
  */
-export function MissingWeeksPanel({ onLoaded }: { onLoaded?: () => void }) {
+/**
+ * A slim line on the marketplace's front page when your courses have missing
+ * weeks (or weeks wanting your slides), opening the Missing weeks tab.
+ * Loading it is also when missing weeks get asked for automatically.
+ */
+export function MissingWeeksBanner({ onOpen, onLoaded }: { onOpen: () => void; onLoaded?: () => void }) {
+  const version = useStore((s) => s.version)
+  const [info, setInfo] = useState<MissingInfo | null>(null)
+  useEffect(() => {
+    let live = true
+    void api.market
+      .missing()
+      .then((i) => {
+        if (!live) return
+        setInfo(i)
+        onLoaded?.()
+      })
+      .catch(() => setInfo(null))
+    return () => {
+      live = false
+    }
+  }, [version])
+  if (!info) return null
+  const toMake = info.missing.filter((m) => !m.available).length
+  const toAdd = info.missing.filter((m) => m.available).length
+  const slides = info.slidesWanted.length
+  const parts = [
+    toMake ? `${plural(toMake, 'week')} of your courses ${toMake === 1 ? 'is' : 'are'} missing` : '',
+    toAdd ? `${plural(toAdd, 'week')} you don’t have ${toAdd === 1 ? 'is' : 'are'} here to add` : '',
+    slides ? `${plural(slides, 'week')} of your courses ${slides === 1 ? 'needs' : 'need'} slides` : ''
+  ].filter(Boolean)
+  if (!parts.length) return null
+  const text = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+  return (
+    <button
+      onClick={onOpen}
+      className="flex w-full items-center gap-3 rounded-xl border border-[color-mix(in_oklab,var(--accent)_25%,var(--line))] bg-accent-soft/40 px-4 py-2.5 text-left text-[0.92rem] transition-colors hover:bg-accent-soft/70"
+    >
+      <CalendarX className="size-4 shrink-0 text-accent" />
+      <span className="min-w-0 flex-1">{text.charAt(0).toUpperCase() + text.slice(1)}.</span>
+      <span className="inline-flex shrink-0 items-center gap-0.5 font-medium text-accent">
+        See them <ChevronRight className="size-4" />
+      </span>
+    </button>
+  )
+}
+
+/** The Missing weeks tab: empty, it says so. */
+export function MissingWeeksTab() {
+  return <MissingWeeksPanel empty={<Empty icon={<CalendarCheck className="size-8" />} title="No missing weeks">Every week of your courses, up to the latest one you’ve got to, is there.</Empty>} />
+}
+
+export function MissingWeeksPanel({ onLoaded, empty = null }: { onLoaded?: () => void; empty?: React.ReactNode }) {
   const version = useStore((s) => s.version)
   const [info, setInfo] = useState<MissingInfo | null>(null)
   const load = () =>
@@ -661,7 +791,8 @@ export function MissingWeeksPanel({ onLoaded }: { onLoaded?: () => void }) {
     }
     return [...m.entries()]
   }, [info])
-  if (!info || (!info.missing.length && !info.slidesWanted.length)) return null
+  if (!info) return null
+  if (!info.missing.length && !info.slidesWanted.length) return <>{empty}</>
   const setAuto = async (on: boolean) => {
     try {
       await api.market.setAutoRequest({ on })
@@ -756,6 +887,7 @@ function useBusy(onChange: () => void) {
 
 function MissingRow({ m, onChange }: { m: MissingWeek; onChange: () => void }) {
   const { busy, run } = useBusy(onChange)
+  const rate = useUsageRate()
   const r = m.request
   const thanks = `Thanks: someone can make Week ${m.number} of ${m.course} now. It comes into your course when it’s done.`
   const pick = async () => {
@@ -769,8 +901,12 @@ function MissingRow({ m, onChange }: { m: MissingWeek; onChange: () => void }) {
     : !r
       ? 'Not asked for'
       : r.inProgress
-        ? 'Being made'
-        : r.ready
+        ? r.yours
+          ? 'Your task: make it now, or from Home'
+          : 'Being made'
+        : r.partial
+          ? materialText(r)
+          : r.ready
           ? `Has slides · waiting for someone to make it${r.votes > 1 ? ` · ${r.votes} want it` : ''}`
           : `Needs slides${r.votes > 1 ? ` · ${r.votes} want it` : ''}`
   return (
@@ -792,6 +928,11 @@ function MissingRow({ m, onChange }: { m: MissingWeek; onChange: () => void }) {
           Ask for it
         </Button>
       ) : null}
+      {r && canMake(r) && (
+        <Button size="sm" variant="primary" onClick={() => void makeNow(r, rate).then((ok) => ok && onChange())} title="Make it now with your AI">
+          <Sparkles className="size-4" /> Make it
+        </Button>
+      )}
       {!m.available && !r?.ready && <SlideButtons files={m.files} onPick={() => void pick()} onShare={() => void share()} busy={busy} />}
     </div>
   )

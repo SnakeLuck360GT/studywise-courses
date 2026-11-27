@@ -18,7 +18,7 @@ import { getDb } from '../db'
 import { getSetting, setSetting } from '../db/repo'
 import { addFiles, addWeek, createCourse, deleteWeek, getCourse, listCourses, planWeek, updateWeekFrom, writeTopic } from './course'
 import { importWeek, weekZip } from './weekShare'
-import { MarketError, contributeTo, copies, download, isWeekPrivate, json, linkedCourses, marketAuth, publish, recordAdded, request, send, test, updateFromMarket } from './market'
+import { MarketError, contributeTo, copies, download, isWeekPrivate, json, linkedCourses, listCourses as listMarketCourses, marketAuth, publish, recordAdded, request, send, test, updateFromMarket } from './market'
 import type { JobContext } from '../jobs'
 import { AUTO_REQUEST_SETTING, IMPORTED_WEEKS_SETTING, READING_WEEK, REQUESTS_DELIVERED_SETTING, TEACHING_WEEKS, WEEKS_PER_MODULE, requestTitle, sameCourse, weekNumber, type MarketTask, type MissingInfo, type MissingWeek, type SlidesWanted, type WeekRequest } from '@shared/market'
 
@@ -202,9 +202,12 @@ function part(ctx: JobContext, from: number, to: number): JobContext {
   return { ...ctx, live: live && ((u) => live(u.percent == null ? u : { ...u, percent: from + (to - from) * u.percent })) }
 }
 
+/** The rest of a published week to write (asked for, or made partway by someone who ran out): written into that week, not a new one. */
+const finishing = (r: WeekRequest) => r.kind === 'write' || (r.kind === 'week' && r.status === 'open' && !!r.weekId)
+
 /** Bring the request's material here: the week to make it in. */
 async function prepareWeek(r: WeekRequest, ctx: JobContext): Promise<string> {
-  if (r.kind === 'write') {
+  if (finishing(r)) {
     // You have that week already: write the rest in your copy.
     const have = copies()[r.weekId!]
     if (have) return have.weekId
@@ -256,10 +259,12 @@ async function prepareWeek(r: WeekRequest, ctx: JobContext): Promise<string> {
 
 /**
  * Do today's task (a job): bring the material here, plan the week if it isn't
- * planned, write every topic not written yet, and publish it. Running it again
- * after it stopped (a limit, the app closing) carries on where it got to.
+ * planned, write its topics one by one, and publish it. Running out of limit
+ * partway is fine: the topics written go up, and the rest goes back for
+ * someone else (or for you, another day). Running it again after it stopped
+ * carries on where it got to.
  */
-export async function runTask(taskId: string, ctx: JobContext): Promise<{ week: string; topics: number }> {
+export async function runTask(taskId: string, ctx: JobContext): Promise<{ week: string; topics: number; partial: boolean }> {
   const { task } = await todayTask()
   if (!task || task.id !== taskId) throw new Error('That isn’t today’s task any more.')
   if (task.status !== 'assigned' && task.status !== 'started')
@@ -282,29 +287,103 @@ export async function runTask(taskId: string, ctx: JobContext): Promise<{ week: 
     ctx.progress(`Planning ${r.label}`)
     await planWeek(weekId, part(ctx, 0.05, 0.2))
   }
+  // Topic by topic: one that fails (out of limit, say) stops here, and what's written still goes up.
   const left = topics().filter((t) => t.status !== 'ready')
   let sections = 0
+  let wrote = 0
+  let stopped: Error | null = null
   for (const [i, t] of left.entries()) {
-    if (ctx.signal.aborted) throw new Error('Cancelled')
+    if (ctx.signal.aborted) {
+      stopped = new Error('Cancelled')
+      break
+    }
     ctx.progress(`Writing topic ${i + 1} of ${left.length}: ${t.plan.title}`)
-    const r2 = await writeTopic(t.id, part(ctx, 0.2 + (0.7 * i) / left.length, 0.2 + (0.7 * (i + 1)) / left.length))
-    sections += r2.sections
+    try {
+      const r2 = await writeTopic(t.id, part(ctx, 0.2 + (0.7 * i) / left.length, 0.2 + (0.7 * (i + 1)) / left.length))
+      sections += r2.sections
+      wrote++
+    } catch (e) {
+      stopped = e as Error
+      break
+    }
   }
   // What the writing used, per section (planning's share included), for the next estimate.
   ctx.meta({ sectionsWritten: sections })
+  // Nothing new written: nothing to send.
+  if (stopped && !wrote) throw stopped
 
-  ctx.progress('Publishing it')
+  ctx.progress(stopped ? `Publishing the ${wrote} topic${wrote === 1 ? '' : 's'} written` : 'Publishing it')
   ctx.live?.({ stage: 'Publishing it to the marketplace…', percent: 0.92 })
-  if (r.kind === 'write') {
-    await contributeTo(r.weekId!, weekId, part(ctx, 0.92, 0.99))
+  if (finishing(r)) {
+    // Your own week (you made the first part): publish it again. Someone else's: your topics merge into it.
+    const own = copies()[r.weekId!]
+    if (own?.how === 'published' && own.weekId === weekId) await publish(weekId, part(ctx, 0.92, 0.99))
+    else await contributeTo(r.weekId!, weekId, part(ctx, 0.92, 0.99))
     await request(`/api/tasks/${taskId}/done`, post())
   } else {
     const { week } = await publish(weekId, part(ctx, 0.92, 0.99))
     await request(`/api/tasks/${taskId}/done`, post({ weekId: week.id }))
   }
   setSetting(TASK_WEEKS_SETTING, Object.fromEntries(Object.entries(taskWeeks()).filter(([k]) => k !== taskId)))
+  if (stopped) {
+    if (ctx.signal.aborted) throw stopped
+    const rest = left.length - wrote
+    ctx.progress(`Stopped after ${wrote} of ${left.length} topics (${stopped.message}). Those are on the marketplace; the ${rest} left go${rest === 1 ? 'es' : ''} back for someone else. Thanks!`)
+    return { week: `${r.course} · ${r.label}`, topics: wrote, partial: true }
+  }
   ctx.progress(`Made ${requestTitle(r)} for ${r.votes === 1 ? 'the person' : `the ${r.votes} people`} who asked. Thanks!`)
-  return { week: `${r.course} · ${r.label}`, topics: left.length }
+  return { week: `${r.course} · ${r.label}`, topics: left.length, partial: false }
+}
+
+/** Make a wanted week now (yours or anyone's), instead of waiting to be given it: it becomes your task. */
+export async function takeRequest(id: string): Promise<MarketTask> {
+  try {
+    return (await request<{ task: MarketTask }>(`/api/requests/${id}/take`, post())).task
+  } catch (e) {
+    if (e instanceof MarketError && e.status === 404 && /^not found$/i.test(e.message)) throw new Error('The marketplace needs updating to the latest studywise-server for this.')
+    throw e
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Planned but not written: asked for help automatically
+
+/** How long a planned week waits for you to start writing before it's asked for. */
+export const PLANNED_GRACE_MS = 60_000
+/** Weeks that couldn't be asked for this session (not numbered, say): not tried again until the app restarts. */
+const askFailed = new Set<string>()
+
+/**
+ * Your public weeks that were planned over a minute ago and have nothing
+ * written or being written: asked for on the marketplace with their plan, so
+ * someone donating their usage writes them (when automatic requests are on).
+ * Returns how many were asked for.
+ */
+export async function autoAskPlanned(): Promise<number> {
+  if (!marketAuth() || !autoRequestOn()) return 0
+  const asked = new Set(Object.values(askedWeeks()))
+  const tasks = new Set(Object.values(taskWeeks()))
+  const imported = new Set(getSetting<string[]>(IMPORTED_WEEKS_SETTING, []))
+  const rows = getDb()
+    .prepare(
+      `SELECT t.week_id id, MAX(t.updated_at) planned, SUM(t.status = 'ready') written, SUM(t.status = 'writing') writing
+       FROM topics t JOIN weeks w ON w.id = t.week_id JOIN courses c ON c.id = w.course_id
+       WHERE w.private = 0 AND c.private = 0 GROUP BY t.week_id`
+    )
+    .all() as { id: string; planned: string; written: number; writing: number }[]
+  let n = 0
+  for (const w of rows) {
+    if (w.written || w.writing || asked.has(w.id) || tasks.has(w.id) || imported.has(w.id) || askFailed.has(w.id)) continue
+    if (Date.now() - Date.parse(w.planned) < PLANNED_GRACE_MS) continue
+    try {
+      await askForMyWeek(w.id)
+      n++
+    } catch (e) {
+      askFailed.add(w.id)
+      console.warn(`Couldn’t ask for help with a planned week: ${(e as Error).message}`)
+    }
+  }
+  return n
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +491,8 @@ export async function missingWeeks({ background = false } = {}): Promise<Missing
   const auto = autoRequestOn()
   const empty: MissingInfo = { missing: [], slidesWanted: [], autoRequest: auto }
   if (!marketAuth()) return empty
+  // Planned weeks nobody has started writing go up with their plan first.
+  await autoAskPlanned().catch(() => 0)
   if (background && (!auto || Date.now() - lastAuto < AUTO_GAP_MS)) return empty
   lastAuto = Date.now()
   const d = getDb()
@@ -420,6 +501,8 @@ export async function missingWeeks({ background = false } = {}): Promise<Missing
   const writtenIn = d.prepare("SELECT COUNT(*) n FROM topics WHERE week_id = ? AND status = 'ready'")
   const filesIn = d.prepare('SELECT COUNT(*) n FROM course_files WHERE week_id = ?')
   const requests = await listRequests()
+  // Weeks an admin marked as having no content (no lectures) in the marketplace's copy of each course: never missing.
+  const marketCourses = await listMarketCourses().catch(() => [])
   const sameAs = (c: { name: string; module: string }, r: WeekRequest) => sameCourse({ name: c.name, module: c.module }, { name: r.course, module: r.module })
   const asked = autoAsked()
   const missing: MissingWeek[] = []
@@ -436,7 +519,8 @@ export async function missingWeeks({ background = false } = {}): Promise<Missing
       if (!had || info.written > had.written) byNumber.set(n, info)
     }
     const latest = Math.max(0, ...byNumber.keys())
-    for (const n of TEACHING_WEEKS.filter((x) => x <= latest)) {
+    const none = new Set(marketCourses.find((m) => sameCourse({ name: c.name, module: c.module }, { name: m.name, module: m.module }))?.noContent ?? [])
+    for (const n of TEACHING_WEEKS.filter((x) => x <= latest && !none.has(x))) {
       const mine = byNumber.get(n)
       if (mine?.written) continue
       const key = `${c.id}:${n}`
@@ -466,7 +550,7 @@ export async function missingWeeks({ background = false } = {}): Promise<Missing
     }
     // Someone else's requests for this course that need slides: you may have them.
     for (const r of requests) {
-      if (r.kind !== 'week' || r.status !== 'open' || r.ready || r.number === null || !sameAs(c, r)) continue
+      if (r.kind !== 'week' || r.status !== 'open' || r.ready || r.number === null || !sameAs(c, r) || none.has(r.number)) continue
       if (missing.some((m) => m.request?.id === r.id)) continue
       const mine = byNumber.get(r.number)
       slidesWanted.push({ request: r, weekId: mine?.id ?? null, files: mine?.files ?? 0 })
