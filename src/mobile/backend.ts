@@ -17,6 +17,7 @@ import * as phone from './phoneSync'
 import { idb } from './idb'
 import { isOffline, OfflineError } from '../main/offline'
 import type { LearnAnswer, LearnQuestion } from '@shared/questions'
+import type { WeekTrack } from '@shared/course'
 
 type Fn = (input: never) => unknown
 type In = Record<string, never>
@@ -117,6 +118,9 @@ const local: Record<string, Fn> = {
   'courses.topic': (i: { id: string }) => course.getTopic(i.id),
   'courses.rateCard': (i: { topicId: string; front: string; cardId?: string; rating: 1 | 2 | 3 | 4 }) => course.rateTopicCard(i.topicId, i.front, i.rating, i.cardId),
   'courses.setWeekRecall': (i: { weekId: string; on: boolean }) => course.setWeekRecall(i.weekId, i.on),
+  'courses.setWeekTrack': ({ weekId, ...t }: { weekId: string } & WeekTrack) => course.setWeekTrack(weekId, t),
+  'courses.tracker': () => course.tracker(),
+  'courses.reviewCards': (i: { deckIds: string[] }) => course.reviewCards(i.deckIds),
   'courses.setExamDate': (i: { courseId: string; date: string | null }) => course.setExamDate(i.courseId, i.date),
   'courses.setLevel': (i: { topicId: string; level: Parameters<typeof course.setTopicLevel>[1] }) => course.setTopicLevel(i.topicId, i.level),
   'courses.setNote': (i: { courseId: string; note: string }) => course.setCourseNote(i.courseId, i.note),

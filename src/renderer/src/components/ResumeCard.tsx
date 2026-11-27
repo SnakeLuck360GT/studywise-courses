@@ -44,7 +44,7 @@ export function useResumable(version: number, setting = LAST_SESSION_SETTING): [
           kind = 'Learn'
           detail = route.cardIds?.length ? `${plural(route.cardIds.length, 'card')} picked` : 'A new set of questions on this deck'
         } else {
-          const cards = route.courseId ? await api.courses.due({ courseId: route.courseId }) : route.mode === 'due' ? await api.decks.due({ id: route.deckId }) : await api.cards.list({ deckId: route.deckId })
+          const cards = route.deckIds ? await api.courses.reviewCards({ deckIds: route.deckIds }) : route.courseId ? await api.courses.due({ courseId: route.courseId }) : route.mode === 'due' ? await api.decks.due({ id: route.deckId }) : await api.cards.list({ deckId: route.deckId })
           if (!cards.length) throw new Error('done')
           kind = 'Flashcards'
           detail = route.mode === 'due' ? `${plural(cards.length, 'card')} due` : plural(cards.length, 'card')

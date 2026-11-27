@@ -379,7 +379,56 @@ export interface Week {
   private: boolean
   /** Its end-of-week test (multiple choice), when one has been written. */
   test: WeekTest | null
+  /** A priority for review: its due cards come before other weeks' (Tracker, or Choose weeks on Home). */
+  priority: boolean
+  /** Tracker: you've learnt it, you've revised it, and how confident you are (1-5; null until you say). */
+  learnt: boolean
+  revised: boolean
+  confidence: number | null
   created_at: string
+}
+
+/** What you can mark on a week in the tracker. */
+export interface WeekTrack {
+  priority?: boolean
+  learnt?: boolean
+  revised?: boolean
+  confidence?: number | null
+}
+export const CONFIDENCE_MAX = 5
+export const CONFIDENCE_LABELS = ['Not at all', 'A little', 'Getting there', 'Fairly', 'Very'] as const
+
+/** One week in the tracker and the review picker. */
+export interface TrackerWeek {
+  id: string
+  label: string
+  deck_id: string | null
+  recall_off: boolean
+  priority: boolean
+  learnt: boolean
+  revised: boolean
+  confidence: number | null
+  topic_count: number
+  done_count: number
+  card_count: number
+  due_count: number
+}
+
+/** A course with its weeks in order, for the tracker and the review picker. */
+export interface TrackerCourse {
+  id: string
+  name: string
+  module: string
+  exam_date: string | null
+  weeks: TrackerWeek[]
+}
+
+/** Decks you can review that aren't a course's weeks. */
+export interface TrackerDeck {
+  id: string
+  name: string
+  card_count: number
+  due_count: number
 }
 
 export interface WeekFull extends Week {

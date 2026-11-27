@@ -63,6 +63,9 @@ const RATINGS = [
   }
 ]
 
+/** What a review of weeks picked on Home is called. */
+export const reviewName = (n: number) => (n === 1 ? '1 week' : `${n} weeks and decks`)
+
 const days = (n: number) => (n < 30 ? `${n} day${n === 1 ? '' : 's'}` : n < 365 ? `${Math.round(n / 30)} mo` : `${(n / 365).toFixed(1)} y`)
 
 /** Where a card starts in a set: learnt ones need one green, part-learnt ones are light green. */
@@ -80,8 +83,8 @@ interface Snapshot {
   scored: boolean
 }
 
-/** Review one deck, or (with courseId) the due cards from every week of a course. */
-export function Flashcards({ deckId, mode, courseId }: { deckId: string; mode: 'due' | 'all'; courseId?: string }) {
+/** Review one deck, (with courseId) the due cards from every week of a course, or (with deckIds) the weeks picked on Home. */
+export function Flashcards({ deckId, mode, courseId, deckIds }: { deckId: string; mode: 'due' | 'all'; courseId?: string; deckIds?: string[] }) {
   const go = useStore((s) => s.go)
   const openExplain = useStore((s) => s.openExplain)
   const [all, setAll] = useState<CardT[] | null>(null)
@@ -105,10 +108,16 @@ export function Flashcards({ deckId, mode, courseId }: { deckId: string; mode: '
   const finished = !!all && setCards.length > 0 && queue.length === 0
   const allDone = !!all && (all.length === 0 || (finished && setStart + SET_SIZE >= all.length))
   // Home offers Continue for a review left with cards still to go.
-  useStudySession(all ? { name: 'flashcards', deckId, mode, ...(courseId ? { courseId } : {}) } : null, deckName, allDone)
+  useStudySession(all ? { name: 'flashcards', deckId, mode, ...(courseId ? { courseId } : {}), ...(deckIds ? { deckIds } : {}) } : null, deckName, allDone)
   useEffect(() => void api.settings.all().then((s) => setKind((s['review.scheduler'] as SchedulerKind) ?? DEFAULT_SCHEDULER)), [])
 
+  const picked = deckIds?.join(',') ?? ''
   useEffect(() => {
+    if (deckIds) {
+      setDeckName(reviewName(deckIds.length))
+      void api.courses.reviewCards({ deckIds }).then(setAll)
+      return
+    }
     if (courseId) {
       void api.courses.get({ id: courseId }).then((c) => setDeckName(c.name))
       void api.courses.due({ courseId }).then(setAll)
@@ -118,7 +127,7 @@ export function Flashcards({ deckId, mode, courseId }: { deckId: string; mode: '
     void (mode === 'due' ? api.decks.due({ id: deckId }) : api.cards.list({ deckId })).then((cards) => {
       setAll(mode === 'all' ? [...cards].sort(() => Math.random() - 0.5) : cards)
     })
-  }, [deckId, mode, courseId])
+  }, [deckId, mode, courseId, picked])
 
   // A new set: where each card stands, from its review state.
   useEffect(() => {
@@ -145,7 +154,7 @@ export function Flashcards({ deckId, mode, courseId }: { deckId: string; mode: '
     }
   }, [setCards])
   // Leaving goes back to where the review started.
-  const leave = () => (courseId ? go({ name: 'course', id: courseId }) : go({ name: 'deck', id: deckId }))
+  const leave = () => (deckIds ? go({ name: 'home' }) : courseId ? go({ name: 'course', id: courseId }) : go({ name: 'deck', id: deckId }))
 
   const card = queue.length ? byId.get(queue[0]) : undefined
   const colour = card ? colours[card.id] : undefined
@@ -320,7 +329,11 @@ export function Flashcards({ deckId, mode, courseId }: { deckId: string; mode: '
                 Next {Math.min(SET_SIZE, all.length - setStart - SET_SIZE)} cards <Kbd className="ml-1 border-current/30">↩</Kbd>
               </Button>
             )}
-            {courseId ? (
+            {deckIds ? (
+              <Button variant={allDone ? 'primary' : 'ghost'} onClick={leave}>
+                Back to Home
+              </Button>
+            ) : courseId ? (
               <Button variant={allDone ? 'primary' : 'ghost'} onClick={leave}>
                 Back to the course
               </Button>

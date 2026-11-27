@@ -306,6 +306,12 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE weeks ADD COLUMN error_at TEXT;
   UPDATE topics SET error_at = updated_at WHERE error IS NOT NULL;
   UPDATE weeks SET error_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE error IS NOT NULL;
+  `,
+  /* 18: the tracker: a week can be a priority for review (its due cards come first), and you mark it learnt, revised and how confident you are (1-5, null: not rated) */ `
+  ALTER TABLE weeks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE weeks ADD COLUMN learnt INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE weeks ADD COLUMN revised INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE weeks ADD COLUMN confidence INTEGER;
   `
 ]
 

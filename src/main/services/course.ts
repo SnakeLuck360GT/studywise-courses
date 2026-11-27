@@ -59,6 +59,10 @@ import {
   type TopicSection,
   type TopicProgress,
   type TopicVersion,
+  type TrackerCourse,
+  type TrackerDeck,
+  type WeekTrack,
+  CONFIDENCE_MAX,
   type QuestionAmount,
   type Week,
   type WeekFull,
@@ -100,7 +104,18 @@ const WHOLE_PDF_PAGES = 40
 
 type CourseRow = Course & { note_folder_id?: string | null }
 type RawCourseRow = Omit<CourseRow, 'private' | 'focus'> & { private: number; focus?: string | null }
-type WeekRow = Omit<Week, 'recall_off' | 'private' | 'test' | 'error_at'> & { error_at?: string | null; outline: string | null; recall_off: number; private: number; planned_with?: string | null; test?: string | null }
+type WeekRow = Omit<Week, 'recall_off' | 'private' | 'test' | 'error_at' | 'priority' | 'learnt' | 'revised' | 'confidence'> & {
+  error_at?: string | null
+  outline: string | null
+  recall_off: number
+  private: number
+  planned_with?: string | null
+  test?: string | null
+  priority?: number | null
+  learnt?: number | null
+  revised?: number | null
+  confidence?: number | null
+}
 type TopicRow = {
   id: string
   course_id: string
@@ -165,7 +180,17 @@ const toTopic = (r: TopicRow, counts: Map<string, number>): Topic => ({
   updated_at: r.updated_at
 })
 
-const toWeek = ({ outline: _o, recall_off, private: p, planned_with: _p, test, error_at, ...w }: WeekRow): Week => ({ ...w, error_at: error_at ?? null, recall_off: !!recall_off, private: !!p, test: json<WeekTest | null>(test ?? null, null) })
+const toWeek = ({ outline: _o, recall_off, private: p, planned_with: _p, test, error_at, priority, learnt, revised, confidence, ...w }: WeekRow): Week => ({
+  ...w,
+  error_at: error_at ?? null,
+  recall_off: !!recall_off,
+  private: !!p,
+  test: json<WeekTest | null>(test ?? null, null),
+  priority: !!priority,
+  learnt: !!learnt,
+  revised: !!revised,
+  confidence: confidence ?? null
+})
 const toCourseRow = (r: RawCourseRow): CourseRow => ({ ...r, private: !!r.private, focus: json<string[]>(r.focus ?? null, []).filter(isCourseFocus) })
 
 function courseRow(id: string): CourseRow {
@@ -2422,9 +2447,102 @@ export function recallReview(cardId: string, knew: boolean): void {
   repo.applyReview(cardId, knew ? 3 : 1, 'learn')
 }
 
-/** Due recall cards from every week of the course with recall on, in week order. */
+/** Due recall cards from every week of the course with recall on, priority weeks first, then in week order. */
 export function dueCards(courseId: string): Card[] {
-  return recallDeckIds(courseId).flatMap((d) => repo.dueCards(d))
+  return byPriority(recallDeckIds(courseId)).flatMap((d) => repo.dueCards(d))
+}
+
+/** Week decks marked as a priority for review. */
+function priorityDeckIds(): Set<string> {
+  return new Set((getDb().prepare('SELECT deck_id FROM weeks WHERE priority = 1 AND deck_id IS NOT NULL').all() as { deck_id: string }[]).map((r) => r.deck_id))
+}
+
+/** Decks in the same order, with priority weeks' decks moved to the front. */
+function byPriority(deckIds: string[]): string[] {
+  const pri = priorityDeckIds()
+  return [...deckIds.filter((d) => pri.has(d)), ...deckIds.filter((d) => !pri.has(d))]
+}
+
+/**
+ * Due cards from the decks you picked (Choose weeks on Home): priority weeks'
+ * cards first, then the rest in the order given. Resting weeks (recall off,
+ * exam over) have none, as in the due counts.
+ */
+export function reviewCards(deckIds: string[]): Card[] {
+  const resting = repo.restingDeckIds()
+  const seen = new Set<string>()
+  const out: Card[] = []
+  for (const d of byPriority([...new Set(deckIds)].filter((x) => deckExists(x) && !resting.has(x)))) {
+    for (const c of repo.dueCards(d)) if (!seen.has(c.id)) (seen.add(c.id), out.push(c))
+  }
+  return out
+}
+
+/** Mark a week in the tracker: priority, learnt, revised, confidence (1-5, or null to clear). */
+export function setWeekTrack(weekId: string, t: WeekTrack): Week {
+  weekRow(weekId)
+  const set: string[] = []
+  const vals: (number | null)[] = []
+  for (const k of ['priority', 'learnt', 'revised'] as const) {
+    if (t[k] !== undefined) (set.push(`${k} = ?`), vals.push(t[k] ? 1 : 0))
+  }
+  if (t.confidence !== undefined) {
+    const c = t.confidence === null ? null : Math.round(t.confidence)
+    if (c !== null && (c < 1 || c > CONFIDENCE_MAX)) throw new Error(`Confidence goes from 1 to ${CONFIDENCE_MAX}`)
+    set.push('confidence = ?')
+    vals.push(c)
+  }
+  if (set.length) getDb().prepare(`UPDATE weeks SET ${set.join(', ')} WHERE id = ?`).run(...vals, weekId)
+  return toWeek(weekRow(weekId))
+}
+
+/**
+ * Every course with its weeks in order (what you've marked, topics done,
+ * cards and what's due), and the decks that aren't a course's weeks: for the
+ * Tracker and for choosing which weeks to review.
+ */
+export function tracker(): { courses: TrackerCourse[]; decks: TrackerDeck[] } {
+  const db = getDb()
+  const due = repo.dueCountsByDeck()
+  const cardsBy = new Map((db.prepare('SELECT deck_id, COUNT(*) n FROM cards GROUP BY deck_id').all() as { deck_id: string; n: number }[]).map((r) => [r.deck_id, r.n]))
+  const topics = db.prepare('SELECT week_id, progress FROM topics').all() as { week_id: string; progress: string }[]
+  const topicsBy = new Map<string, { n: number; done: number }>()
+  for (const t of topics) {
+    const x = topicsBy.get(t.week_id) ?? { n: 0, done: 0 }
+    x.n++
+    if (json<Partial<TopicProgress>>(t.progress, {}).done) x.done++
+    topicsBy.set(t.week_id, x)
+  }
+  const weekRows = db.prepare('SELECT * FROM weeks').all() as WeekRow[]
+  const inCourse = new Set<string>()
+  const rows = (db.prepare('SELECT * FROM courses ORDER BY name COLLATE NOCASE').all() as RawCourseRow[]).map(toCourseRow)
+  const courses = rows.map((c): TrackerCourse => {
+    if (c.deck_id) inCourse.add(c.deck_id)
+    const weeks = sortWeeks(weekRows.filter((w) => w.course_id === c.id)).map((r) => {
+      const w = toWeek(r)
+      if (w.deck_id) inCourse.add(w.deck_id)
+      const tp = topicsBy.get(w.id) ?? { n: 0, done: 0 }
+      return {
+        id: w.id,
+        label: w.label,
+        deck_id: w.deck_id,
+        recall_off: w.recall_off,
+        priority: w.priority,
+        learnt: w.learnt,
+        revised: w.revised,
+        confidence: w.confidence,
+        topic_count: tp.n,
+        done_count: tp.done,
+        card_count: w.deck_id ? (cardsBy.get(w.deck_id) ?? 0) : 0,
+        due_count: w.deck_id ? (due.get(w.deck_id) ?? 0) : 0
+      }
+    })
+    return { id: c.id, name: c.name, module: c.module, exam_date: c.exam_date, weeks }
+  })
+  const decks = (db.prepare('SELECT id, name FROM decks ORDER BY name COLLATE NOCASE').all() as { id: string; name: string }[])
+    .filter((d) => !inCourse.has(d.id))
+    .map((d) => ({ id: d.id, name: d.name, card_count: cardsBy.get(d.id) ?? 0, due_count: due.get(d.id) ?? 0 }))
+  return { courses, decks }
 }
 
 function noteFolder(courseId: string): string {

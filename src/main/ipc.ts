@@ -601,6 +601,15 @@ export const handlers = {
     removeCards: h(z.object({ cardIds: z.array(id).max(2000) }), (i) => course.removeTopicCards(i.cardIds)),
     /** Turn a week's recall on or off (its cards stay). */
     setWeekRecall: h(z.object({ weekId: id, on: z.boolean() }), (i) => course.setWeekRecall(i.weekId, i.on)),
+    /** Tracker: mark a week as a priority, learnt, revised, or how confident you are (1-5, null clears it). */
+    setWeekTrack: h(
+      z.object({ weekId: id, priority: z.boolean().optional(), learnt: z.boolean().optional(), revised: z.boolean().optional(), confidence: z.number().int().min(1).max(5).nullable().optional() }),
+      ({ weekId, ...t }) => course.setWeekTrack(weekId, t)
+    ),
+    /** Every course's weeks (with what you've marked and what's due), and the decks outside courses. */
+    tracker: h(none, () => course.tracker()),
+    /** Due cards from the decks you picked, priority weeks first. */
+    reviewCards: h(z.object({ deckIds: z.array(id).max(2000) }), (i) => course.reviewCards(i.deckIds)),
     /** Public or private on the marketplace. Going private takes down what's published. */
     setVisibility: h(z.object({ courseId: id, private: z.boolean() }), (i) => market.setCourseVisibility(i.courseId, i.private)),
     setWeekVisibility: h(z.object({ weekId: id, private: z.boolean() }), (i) => market.setWeekVisibility(i.weekId, i.private)),

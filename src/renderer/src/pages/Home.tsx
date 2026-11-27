@@ -9,6 +9,8 @@ import { Shell } from '../components/Shell'
 import { Button, Kbd, cx } from '../components/ui'
 import { ResumeCard, useResumable } from '../components/ResumeCard'
 import { TaskBanner } from '../components/MarketRequests'
+import { ReviewPicker, useReviewPick, useTracker } from '../components/ReviewPicker'
+import { SlidersHorizontal, Star } from 'lucide-react'
 
 type DeckRow = Deck & { card_count: number; due_count: number }
 type Overview = { activity: { date: string; count: number }[]; streak: number; today: number; week: number; next: (Card & { deck_name: string }) | null }
@@ -46,12 +48,27 @@ export function Home() {
     return () => window.removeEventListener(STUDY_TIME_EVENT, refresh)
   }, [])
 
-  const due = decks.reduce((n, d) => n + d.due_count, 0)
+  // Which weeks and decks the review covers (Choose weeks), and which weeks are a priority.
+  const [pick, setPick] = useReviewPick()
+  const [tracker] = useTracker()
+  const [picking, setPicking] = useState(false)
+  const priority = useMemo(() => new Set((tracker?.courses ?? []).flatMap((c) => c.weeks.filter((w) => w.priority && w.deck_id).map((w) => w.deck_id!))), [tracker])
+  const weekLabel = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of tracker?.courses ?? []) for (const w of c.weeks) if (w.deck_id) m.set(w.deck_id, `${c.name} · ${w.label}`)
+    return m
+  }, [tracker])
+  const picked = pick ? decks.filter((d) => pick.has(d.id)) : decks
+  const due = picked.reduce((n, d) => n + d.due_count, 0)
+  const priorityDue = picked.filter((d) => priority.has(d.id)).reduce((n, d) => n + d.due_count, 0)
   const running = jobs.filter((j) => j.status === 'running')
   const sorted = [...decks].sort((a, b) => b.due_count - a.due_count || a.name.localeCompare(b.name))
-  const top = sorted.find((d) => d.due_count > 0)
+  const withDue = [...picked].filter((d) => d.due_count > 0).sort((a, b) => Number(priority.has(b.id)) - Number(priority.has(a.id)) || b.due_count - a.due_count || a.name.localeCompare(b.name))
+  const top = withDue[0]
 
-  const startReview = () => (top ? go({ name: 'flashcards', deckId: top.id, mode: 'due' }) : runCommand('study.learn'))
+  // Everything due in what's picked, priority weeks first; one deck reviews on its own.
+  const startReview = () =>
+    !top ? runCommand('study.learn') : withDue.length === 1 ? go({ name: 'flashcards', deckId: top.id, mode: 'due' }) : go({ name: 'flashcards', deckId: '', mode: 'due', deckIds: withDue.map((d) => d.id) })
   const resume = resumable ? () => go(resumable.session.route) : null
   // Enter carries on where you left off, else starts reviewing.
   useCommands({ 'learn.submit': resume ?? (top ? startReview : null) }, [top, resumable])
@@ -77,7 +94,17 @@ export function Home() {
                 <span className="text-[1.6rem] font-semibold tracking-[-0.02em]">{due === 1 ? 'card due' : 'cards due'}</span>
               </h1>
               <p className="mt-3 text-muted">
-                {due > 0 ? <>Most in <span className="text-ink">{top?.name}</span>.</> : 'All caught up.'}
+                {priorityDue > 0 ? (
+                  <>
+                    <span className="text-ink">{priorityDue}</span> from priority weeks first.
+                  </>
+                ) : due > 0 ? (
+                  <>
+                    Most in <span className="text-ink">{weekLabel.get(top!.id) ?? top?.name}</span>.
+                  </>
+                ) : (
+                  'All caught up.'
+                )}
                 {ov && ov.streak > 0 && (
                   <>
                     {' '}
@@ -86,6 +113,20 @@ export function Home() {
                   </>
                 )}
               </p>
+              <button
+                onClick={() => setPicking(true)}
+                className="mt-3 inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1 text-[0.85rem] text-muted transition-colors hover:border-[color-mix(in_oklab,var(--ink)_25%,transparent)] hover:text-ink"
+                title="Choose which weeks of which courses to review, and which come first"
+              >
+                <SlidersHorizontal className="size-3.5" />
+                {pick ? `Reviewing ${picked.length} of ${decks.length} weeks and decks` : 'Reviewing every week and deck'}
+                {priority.size > 0 && (
+                  <span className="inline-flex items-center gap-1 text-warn">
+                    <Star className="size-3" fill="currentColor" /> {priority.size}
+                  </span>
+                )}
+                <span className="font-medium text-accent">Choose weeks</span>
+              </button>
             </>
           )}
           <div className="mt-7 flex flex-wrap items-center gap-2">
@@ -107,6 +148,7 @@ export function Home() {
           </div>
         </div>
 
+        <ReviewPicker open={picking} onClose={() => setPicking(false)} pick={pick} onPick={setPick} />
         {/* Time studied this week, and how it's going. */}
         <StudyPanel stats={stats} />
       </section>

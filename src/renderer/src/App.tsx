@@ -32,6 +32,7 @@ import { Flashcards } from './pages/Flashcards'
 import { Notes } from './pages/Notes'
 import { Jobs } from './pages/Jobs'
 import { Courses, NewCourseModal } from './pages/Courses'
+import { Tracker } from './pages/Tracker'
 import { Market } from './pages/Market'
 import { MarketMatchesHost } from './components/MarketMatches'
 import { JobDock } from './components/JobLive'
@@ -227,6 +228,7 @@ export function App() {
       'go.home': () => go({ name: 'home' }),
       'go.decks': () => go({ name: 'decks' }),
       'go.courses': () => go({ name: 'courses' }),
+      'go.tracker': () => go({ name: 'tracker' }),
       'go.market': () => go({ name: 'market' }),
       'go.notes': () => go({ name: 'notes', id: (useStore.getState().route as { id?: string }).id ?? null }),
       'go.jobs': () => go({ name: 'jobs' }),
@@ -458,7 +460,7 @@ function Page({ route }: { route: Route }) {
     case 'deck':
       return <DeckPage id={route.id} focusCardId={route.cardId} />
     case 'flashcards':
-      return <Flashcards deckId={route.deckId} mode={route.mode} courseId={route.courseId} />
+      return <Flashcards key={route.deckIds?.join(',') ?? ''} deckId={route.deckId} mode={route.mode} courseId={route.courseId} deckIds={route.deckIds} />
     case 'learn':
       return <Learn deckId={route.deckId} cardIds={route.cardIds} />
     case 'notes':
@@ -469,6 +471,8 @@ function Page({ route }: { route: Route }) {
       return <Jobs />
     case 'courses':
       return <Courses />
+    case 'tracker':
+      return <Tracker />
     case 'market':
       return <Market key={route.courseId ?? ''} courseId={route.courseId} />
     case 'course':

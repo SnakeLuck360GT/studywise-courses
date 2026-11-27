@@ -138,7 +138,8 @@ export async function weekZip(weekId: string, onProgress?: (fraction: number) =>
     exportedAt: new Date().toISOString(),
     course: { name: String(course.name), module: String(course.module ?? ''), level: String(course.level ?? '') },
     // Whether it's private on your computer is yours, like the deck it's in.
-    week: { ...week, deck_id: null, private: undefined },
+    // Your tracker marks (priority, learnt, revised, confidence) are yours: they don't go in a shared week.
+    week: { ...week, deck_id: null, private: undefined, priority: undefined, learnt: undefined, revised: undefined, confidence: undefined },
     files,
     topics,
     cards,
@@ -164,7 +165,7 @@ export function weekContentHash(weekId: string): string {
   const drop = (r: Row, keys: string[]) => Object.fromEntries(Object.entries(r).filter(([k]) => !keys.includes(k)))
   const content = {
     course: { name: String(course.name), module: String(course.module ?? ''), level: String(course.level ?? '') },
-    week: drop(week, ['id', 'course_id', 'deck_id', 'private', 'recall_off', 'created_at']),
+    week: drop(week, ['id', 'course_id', 'deck_id', 'private', 'recall_off', 'priority', 'learnt', 'revised', 'confidence', 'created_at']),
     topics: topics.map((t) => drop(t, ['course_id', 'week_id', 'updated_at'])),
     cards: cards.map((c) => drop(c, ['deck_id', 'dormant', 'created_at', 'updated_at'])),
     files: files.map((f) => {

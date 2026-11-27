@@ -2,7 +2,7 @@
 // at the bottom, in place of the desktop's navigation bar.
 
 import { useState } from 'react'
-import { ArrowLeft, House, GraduationCap, Layers, NotebookPen, Settings, Cloud, CloudOff, RefreshCw, Laptop, ArrowRight } from 'lucide-react'
+import { ArrowLeft, House, GraduationCap, ListChecks, Layers, NotebookPen, Settings, Cloud, CloudOff, RefreshCw, Laptop, ArrowRight } from 'lucide-react'
 import { useStore, type Route } from '../lib/store'
 import { mobile } from '../lib/platform'
 import { cx, Button } from './ui'
@@ -14,6 +14,7 @@ import { api } from '../lib/api'
 const TABS: { label: string; route: Route; match: Route['name'][]; icon: typeof House }[] = [
   { label: 'Home', route: { name: 'home' }, match: ['home'], icon: House },
   { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic', 'weektest'], icon: GraduationCap },
+  { label: 'Tracker', route: { name: 'tracker' }, match: ['tracker'], icon: ListChecks },
   { label: 'Decks', route: { name: 'decks' }, match: ['decks', 'deck', 'flashcards', 'learn'], icon: Layers },
   { label: 'Notes', route: { name: 'notes' }, match: ['notes'], icon: NotebookPen },
   { label: 'Settings', route: { name: 'settings' }, match: ['settings', 'jobs'], icon: Settings }
@@ -25,6 +26,7 @@ export const STUDY_ROUTES: Route['name'][] = ['topic', 'weektest', 'flashcards',
 const TITLES: Partial<Record<Route['name'], string>> = {
   home: 'Studywise',
   courses: 'Courses',
+  tracker: 'Tracker',
   course: 'Course',
   week: 'Week',
   decks: 'Decks',
@@ -103,7 +105,7 @@ export function MobileTabBar() {
               aria-current={active ? 'page' : undefined}
               className={cx('relative flex min-h-[56px] flex-1 flex-col items-center justify-center gap-0.5 text-[0.7rem] font-semibold transition-colors', active ? 'text-accent' : 'text-muted')}
             >
-              <span className={cx('grid h-7 w-14 place-items-center rounded-full transition-[background,transform] duration-300 ease-out-soft', active && 'bg-accent-soft')}>
+              <span className={cx('grid h-7 w-12 place-items-center rounded-full transition-[background,transform] duration-300 ease-out-soft', active && 'bg-accent-soft')}>
                 <t.icon className="size-[20px]" strokeWidth={active ? 2.3 : 2} />
               </span>
               {t.label}

@@ -9,13 +9,18 @@ export type Route =
   | { name: 'home' }
   | { name: 'decks'; folderId?: string | null }
   | { name: 'deck'; id: string; cardId?: string }
-  /** With courseId, reviews the due cards from every week of that course (deckId is unused). */
-  | { name: 'flashcards'; deckId: string; mode: 'due' | 'all'; courseId?: string }
+  /**
+   * With courseId, reviews the due cards from every week of that course (deckId is unused).
+   * With deckIds, the due cards from the weeks and decks picked on Home (Choose weeks), priority weeks first.
+   */
+  | { name: 'flashcards'; deckId: string; mode: 'due' | 'all'; courseId?: string; deckIds?: string[] }
   | { name: 'learn'; deckId: string; cardIds?: string[] }
   | { name: 'notes'; id?: string | null }
   | { name: 'settings'; tab?: string }
   | { name: 'jobs' }
   | { name: 'courses' }
+  /** Every course's weeks: learnt, revised, how confident you are, and which are a priority. */
+  | { name: 'tracker' }
   | { name: 'course'; id: string }
   | { name: 'week'; courseId: string; weekId: string }
   /**

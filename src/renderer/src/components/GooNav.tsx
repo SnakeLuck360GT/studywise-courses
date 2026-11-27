@@ -13,6 +13,7 @@ import { OfflineButton } from './Offline'
 const LINKS: { label: string; route: Route; match: Route['name'][]; key: string }[] = [
   { label: 'Home', route: { name: 'home' }, match: ['home'], key: '⌘1' },
   { label: 'Courses', route: { name: 'courses' }, match: ['courses', 'course', 'week', 'topic', 'weektest'], key: 'g c' },
+  { label: 'Tracker', route: { name: 'tracker' }, match: ['tracker'], key: 'g t' },
   { label: 'Decks', route: { name: 'decks' }, match: ['decks', 'deck', 'flashcards', 'learn'], key: '⌘2' },
   { label: 'Notes', route: { name: 'notes' }, match: ['notes'], key: '⌘3' },
   { label: 'Marketplace', route: { name: 'market' }, match: ['market'], key: 'g k' },
