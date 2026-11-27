@@ -96,20 +96,36 @@ export async function dropOnWeek(weekId: string, weekLabel: string, paths: strin
     } else if (skipped && !shared.length) {
       toast('That kind of file can’t be added to a week. Try PDF, Word, PowerPoint, text, Markdown, a web page, RTF, CSV or a picture.', 'bad')
     }
-    for (const file of shared) {
-      const p = await api.courses.previewWeek({ file })
-      if (!p) continue
-      const ok = await confirmDialog(
-        `Add “${p.week}” from ${p.course} into ${weekLabel}?`,
-        `Its ${p.topics} topic${p.topics === 1 ? '' : 's'} (${p.written} written), ${p.cards} recall card${p.cards === 1 ? '' : 's'} and ${p.files.length} file${p.files.length === 1 ? '' : 's'} join this week's, after its own topics. Nothing is generated, so it costs no tokens.`,
-        { confirmText: 'Add to this week' }
-      )
-      if (!ok) continue
-      const r = await api.courses.importWeek({ file: p.file, courseId: null, weekId })
-      toast(`Added ${r.topics} topic${r.topics === 1 ? '' : 's'} and ${r.cards} card${r.cards === 1 ? '' : 's'} to ${weekLabel}`, 'good')
-    }
+    for (const file of shared) await sharedIntoWeek(weekId, weekLabel, file)
   } catch (e) {
     toast(errorText(e), 'bad')
   }
   useStore.getState().bump()
+}
+
+/** A shared week (picked, or the file given) goes into this week of yours, after its own topics. True when it was added. */
+async function sharedIntoWeek(weekId: string, weekLabel: string, file?: string): Promise<boolean> {
+  const p = await api.courses.previewWeek(file ? { file } : undefined)
+  if (!p) return false
+  const ok = await confirmDialog(
+    `Add “${p.week}” from ${p.course} into ${weekLabel}?`,
+    `Its ${p.topics} topic${p.topics === 1 ? '' : 's'} (${p.written} written), ${p.cards} recall card${p.cards === 1 ? '' : 's'} and ${p.files.length} file${p.files.length === 1 ? '' : 's'} join this week's, after its own topics. Nothing is generated, so it costs no tokens.`,
+    { confirmText: 'Add to this week' }
+  )
+  if (!ok) return false
+  const r = await api.courses.importWeek({ file: p.file, courseId: null, weekId })
+  toast(`Added ${r.topics} topic${r.topics === 1 ? '' : 's'} and ${r.cards} card${r.cards === 1 ? '' : 's'} to ${weekLabel}`, 'good')
+  return true
+}
+
+/** A week's ⋯ menu: pick a shared week (.studyweek) a friend sent and add it into this week. */
+export async function addSharedToWeek(weekId: string, weekLabel: string): Promise<boolean> {
+  try {
+    const ok = await sharedIntoWeek(weekId, weekLabel)
+    if (ok) useStore.getState().bump()
+    return ok
+  } catch (e) {
+    toast(errorText(e), 'bad')
+    return false
+  }
 }

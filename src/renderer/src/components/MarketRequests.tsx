@@ -3,7 +3,7 @@
 // course, and today's task on Home.
 
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarCheck, CalendarX, Check, ChevronRight, FileText, HandHeart, Paperclip, Plus, Sparkles, ThumbsUp, Trash2, X } from 'lucide-react'
+import { CalendarCheck, Check, FileText, HandHeart, Paperclip, Plus, Sparkles, ThumbsUp, Trash2, X } from 'lucide-react'
 import { READING_WEEK, TEACHING_WEEKS, WEEKS_PER_MODULE, requestTitle, usageText, weekNumber, type MarketTask, type MarketWeek, type MissingInfo, type MissingWeek, type SlidesWanted, type UsageRate, type WeekRequest } from '@shared/market'
 import { api, errorText } from '../lib/api'
 import { addMarketWeek, downloadMarketCourse } from '../lib/market'
@@ -716,49 +716,53 @@ export function FinishButton({ week, request, onChange }: { week: MarketWeek; re
  * courses others asked for that still need slides.
  */
 /**
- * A slim line on the marketplace's front page when your courses have missing
- * weeks (or weeks wanting your slides), opening the Missing weeks tab.
- * Loading it is also when missing weeks get asked for automatically.
+ * Under the marketplace's search, always: weeks people are waiting for (your
+ * AI usage can make them) and your own missing weeks, each a click from its
+ * tab. Loading it is also when missing weeks get asked for automatically.
  */
-export function MissingWeeksBanner({ onOpen, onLoaded }: { onOpen: () => void; onLoaded?: () => void }) {
+export function DonateBanner({ onWanted, onMissing }: { onWanted: () => void; onMissing: () => void }) {
   const version = useStore((s) => s.version)
-  const [info, setInfo] = useState<MissingInfo | null>(null)
+  const [wanted, setWanted] = useState<WeekRequest[] | null>(null)
+  const [missing, setMissing] = useState(0)
   useEffect(() => {
     let live = true
+    // Missing weeks first: it may ask for some, which then count as wanted.
     void api.market
       .missing()
-      .then((i) => {
-        if (!live) return
-        setInfo(i)
-        onLoaded?.()
-      })
-      .catch(() => setInfo(null))
+      .then((i) => live && setMissing(i.missing.filter((m) => !m.available).length + i.slidesWanted.length))
+      .catch(() => {})
+      .finally(() => void api.market.requests().then((rs) => live && setWanted(rs.filter((r) => r.status === 'open'))).catch(() => live && setWanted([])))
     return () => {
       live = false
     }
   }, [version])
-  if (!info) return null
-  const toMake = info.missing.filter((m) => !m.available).length
-  const toAdd = info.missing.filter((m) => m.available).length
-  const slides = info.slidesWanted.length
-  const parts = [
-    toMake ? `${plural(toMake, 'week')} of your courses ${toMake === 1 ? 'is' : 'are'} missing` : '',
-    toAdd ? `${plural(toAdd, 'week')} you don’t have ${toAdd === 1 ? 'is' : 'are'} here to add` : '',
-    slides ? `${plural(slides, 'week')} of your courses ${slides === 1 ? 'needs' : 'need'} slides` : ''
-  ].filter(Boolean)
-  if (!parts.length) return null
-  const text = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+  const open = wanted?.length ?? 0
+  const makeable = (wanted ?? []).filter(canMake).length
   return (
-    <button
-      onClick={onOpen}
-      className="flex w-full items-center gap-3 rounded-xl border border-[color-mix(in_oklab,var(--accent)_25%,var(--line))] bg-accent-soft/40 px-4 py-2.5 text-left text-[0.92rem] transition-colors hover:bg-accent-soft/70"
-    >
-      <CalendarX className="size-4 shrink-0 text-accent" />
-      <span className="min-w-0 flex-1">{text.charAt(0).toUpperCase() + text.slice(1)}.</span>
-      <span className="inline-flex shrink-0 items-center gap-0.5 font-medium text-accent">
-        See them <ChevronRight className="size-4" />
-      </span>
-    </button>
+    <section className="mb-6 flex flex-wrap items-center gap-4 rounded-xl border border-accent/30 bg-accent-soft px-5 py-4">
+      <div className="grid size-11 shrink-0 place-items-center rounded-full bg-accent text-accent-ink">
+        <HandHeart className="size-5" />
+      </div>
+      <div className="min-w-[14rem] flex-1">
+        <div className="text-[0.85rem] text-muted">Wanted weeks</div>
+        <div className="text-[1.1rem] font-semibold tracking-[-0.01em]">Donate your AI usage: make weeks people are waiting for</div>
+        <div className="text-[0.88rem] text-muted">
+          {wanted === null
+            ? 'Looking…'
+            : [open ? `${plural(open, 'week')} wanted` : 'Nothing wanted right now', makeable ? `${makeable} ready to make now` : '', missing ? `${plural(missing, 'week')} of your courses missing` : '']
+                .filter(Boolean)
+                .join(' · ')}
+        </div>
+      </div>
+      {missing > 0 && (
+        <Button size="lg" variant="ghost" onClick={onMissing}>
+          Your missing weeks
+        </Button>
+      )}
+      <Button variant="primary" size="lg" onClick={onWanted}>
+        Donate usage
+      </Button>
+    </section>
   )
 }
 

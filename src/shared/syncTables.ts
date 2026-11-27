@@ -50,7 +50,10 @@ export const SYNCED_SETTINGS: Record<string, 'map' | 'list'> = {
   'market.courseLinks': 'map',
   'market.importedWeeks': 'list',
   // Requested weeks already added, so another device doesn't add them again (the week itself syncs).
-  'market.requestsDelivered': 'map'
+  'market.requestsDelivered': 'map',
+  // Deadlines from your spreadsheet and your own tasks, on Home.
+  'home.deadlines': 'map',
+  'home.tasks': 'map'
 }
 
 export const KEY_SEP = '\x1f'

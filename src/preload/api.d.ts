@@ -1,6 +1,7 @@
 import type { StudywiseApi } from '../main/ipc'
 import type { JobInfo, ClaudeStatus, UsageLimits, LinkStatus, CloudStatus } from '../shared/types'
 import type { UpdateStatus } from '../shared/update'
+import type { WeekRequest } from '../shared/market'
 
 export type StudywiseEvent =
   | { type: 'ai:delta'; streamId: string; text: string }
@@ -20,6 +21,8 @@ export type StudywiseEvent =
   | { type: 'link'; status: LinkStatus }
   /** Cloud sync changed state (syncing, synced, can't reach the server). */
   | { type: 'cloud'; status: CloudStatus }
+  /** Weeks you asked or voted for on the marketplace are done: offer to add them. */
+  | { type: 'market:ready'; requests: WeekRequest[] }
 
 declare global {
   interface Window {

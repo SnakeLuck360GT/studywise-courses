@@ -390,46 +390,108 @@ export async function autoAskPlanned(): Promise<number> {
 // Weeks you asked for, added when they're done
 
 /** Not more often than this (it runs after cloud syncs, which happen every minute). */
-const DELIVERY_GAP_MS = 5 * 60_000
+const DELIVERY_GAP_MS = 60_000
 let lastDelivery = 0
 let me: string | null = null
 
+/** Requests offered in a window's "ready" card this session: added from there, not quietly in the background. */
+const offered = new Set<string>()
+const offerKey = (r: WeekRequest) => `${r.id}|${r.weekId}`
+
+const deliveredMap = () => getSetting<Record<string, string>>(REQUESTS_DELIVERED_SETTING, {})
+const markDelivered = (r: WeekRequest) => setSetting(REQUESTS_DELIVERED_SETTING, { ...deliveredMap(), [r.id]: r.weekId! })
+
+/** Done, and not in this library yet (and not something you made yourself). */
+function waiting(r: WeekRequest, who: string): boolean {
+  if (r.status !== 'done' || !r.weekId || deliveredMap()[r.id] === r.weekId) return false
+  if (r.kind === 'week' && r.doneBy.includes(who)) {
+    markDelivered(r)
+    return false
+  }
+  // Already here: a whole week needs nothing; a finished week still brings in its new topics.
+  if (copies()[r.weekId] && r.kind === 'week') {
+    markDelivered(r)
+    return false
+  }
+  return true
+}
+
+async function whoAmI(): Promise<string> {
+  me ??= (await test()).user
+  return me
+}
+
 /**
- * Weeks you asked or voted for that are done now go into your library: into
- * the week of yours you asked for help with, your copy of a week that was
- * finished, a blank week with that number, or the course they go in. Each
- * only once (a week you delete isn't added again). Returns how many came in.
+ * Done weeks you asked or voted for that aren't in your library yet, to offer
+ * in a card straight away (when one is done, or when the app connects).
+ * Each is offered once a session. `pushed`: the one the marketplace just said
+ * is done, checked without asking for the whole list again.
+ */
+export async function readyRequests(pushed?: WeekRequest): Promise<WeekRequest[]> {
+  if (!marketAuth()) return []
+  const who = await whoAmI()
+  const list = pushed ? [pushed] : (await request<{ requests: WeekRequest[] }>('/api/requests/mine')).requests
+  const out = list.filter((r) => waiting(r, who) && !offered.has(offerKey(r)))
+  for (const r of out) offered.add(offerKey(r))
+  return out
+}
+
+/** The card's Not now: the background sync adds it instead (soon, not straight away). */
+export function notNow(id: string): void {
+  for (const k of [...offered]) if (k.startsWith(`${id}|`)) offered.delete(k)
+}
+
+/**
+ * Add one done request to your library now (the card's Add button): into the
+ * week of yours you asked for help with, your copy of a week that was
+ * finished, a blank week with that number, or the course it goes in. Returns
+ * where it went.
+ */
+export async function addReady(id: string): Promise<{ weekId: string; courseId: string } | null> {
+  const who = await whoAmI()
+  const r = (await request<{ requests: WeekRequest[] }>('/api/requests/mine')).requests.find((x) => x.id === id)
+  if (!r || r.status !== 'done' || !r.weekId) throw new Error('That week isn’t ready any more.')
+  const weekId = await deliverOne(r, who)
+  if (!weekId) return null
+  const w = getDb().prepare('SELECT course_id FROM weeks WHERE id = ?').get(weekId) as { course_id: string } | undefined
+  return w ? { weekId, courseId: w.course_id } : null
+}
+
+/** Bring one done request in (see addReady). Returns the week of yours it's in, or null if there was nothing to add. */
+async function deliverOne(r: WeekRequest, who: string): Promise<string | null> {
+  const have = copies()[r.weekId!]
+  if (have) {
+    // A week that was finished for you: your copy gets the new topics, your progress kept.
+    if (r.kind === 'write') await updateFromMarket(r.weekId!, { mine: r.weekAuthor === who, marketCourseId: r.courseId ?? undefined })
+    markDelivered(r)
+    return r.kind === 'write' ? have.weekId : null
+  }
+  if (r.kind === 'week' && r.doneBy.includes(who)) {
+    markDelivered(r)
+    return null
+  }
+  const weekId = await addRequested(r)
+  markDelivered(r)
+  return weekId
+}
+
+/**
+ * In the background (after cloud syncs): weeks you asked or voted for that
+ * are done go into your library. Ones a window has offered in its card are
+ * left for you to add from there. Each only once (a week you delete isn't
+ * added again). Returns how many came in.
  */
 export async function deliverRequested({ force = false } = {}): Promise<number> {
   if (!marketAuth()) return 0
   if (!force && Date.now() - lastDelivery < DELIVERY_GAP_MS) return 0
   lastDelivery = Date.now()
-  me ??= (await test()).user
+  const who = await whoAmI()
   const mine = (await request<{ requests: WeekRequest[] }>('/api/requests/mine')).requests
   let added = 0
   for (const r of mine) {
-    if (r.status !== 'done' || !r.weekId) continue
-    const delivered = getSetting<Record<string, string>>(REQUESTS_DELIVERED_SETTING, {})
-    if (delivered[r.id] === r.weekId) continue
-    const mark = () => setSetting(REQUESTS_DELIVERED_SETTING, { ...getSetting<Record<string, string>>(REQUESTS_DELIVERED_SETTING, {}), [r.id]: r.weekId! })
+    if (!waiting(r, who) || offered.has(offerKey(r))) continue
     try {
-      // You made it: you have it.
-      if (r.doneBy.includes(me) && r.kind === 'week') {
-        mark()
-        continue
-      }
-      const have = copies()[r.weekId]
-      if (have) {
-        // A week that was finished for you: your copy gets the new topics, your progress kept.
-        if (r.kind === 'write') {
-          await updateFromMarket(r.weekId, { mine: r.weekAuthor === me, marketCourseId: r.courseId ?? undefined })
-          added++
-        }
-        mark()
-        continue
-      }
-      if (await addRequested(r)) added++
-      mark()
+      if (await deliverOne(r, who)) added++
     } catch (e) {
       // Tried again at the next sync.
       console.warn(`Couldn’t add ${requestTitle(r)}: ${(e as Error).message}`)
@@ -438,7 +500,7 @@ export async function deliverRequested({ force = false } = {}): Promise<number> 
   return added
 }
 
-async function addRequested(r: WeekRequest): Promise<boolean> {
+async function addRequested(r: WeekRequest): Promise<string> {
   const file = await download(r.weekId!)
   try {
     // Your own week you asked for help with: the finished one goes into it, your progress kept.
@@ -452,18 +514,18 @@ async function addRequested(r: WeekRequest): Promise<boolean> {
       } catch {
         // Too different to bring in: it stays as a week of its own.
         recordAdded(r.weekId!, fresh.weekId, false, r.courseId ?? undefined)
-        return true
+        return fresh.weekId
       } finally {
         setSetting(IMPORTED_WEEKS_SETTING, getSetting<string[]>(IMPORTED_WEEKS_SETTING, []).filter((id) => id !== fresh.weekId))
       }
       if (weekExists(fresh.weekId)) deleteWeek(fresh.weekId)
-      return true
+      return asked
     }
     const courseId = await courseFor(r, { publicOnly: false })
     const blank = courseId ? weekNumbered(courseId, r.number).blank : null
     const imp = await importWeek(file, blank ? { weekId: blank } : courseId ? { courseId } : { newCourse: true })
     recordAdded(r.weekId!, imp.weekId, false, r.courseId ?? undefined)
-    return true
+    return imp.weekId
   } finally {
     rmSync(file, { force: true })
   }

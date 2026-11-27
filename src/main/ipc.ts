@@ -26,6 +26,7 @@ import * as voice from './services/voice'
 import { assertCanMerge } from './services/contentCombine'
 import * as marketTasks from './services/marketTasks'
 import * as marketFill from './services/marketFill'
+import * as deadlines from './services/deadlines'
 import * as usageEstimate from './services/usageEstimate'
 import { CARD_CUTS, COURSE_FOCUSES, CourseQuestion, NOTE_LEVELS, WEEK_TEST_LEVELS } from '@shared/course'
 import * as io from './importexport'
@@ -430,6 +431,8 @@ export const handlers = {
       return w
     }),
     renameWeek: h(z.object({ weekId: id, label: z.string().min(1).max(100) }), (i) => course.renameWeek(i.weekId, i.label)),
+    /** A failure warning's ✕: a week whose planning failed, or a topic that failed to write, is back as it was. */
+    dismissError: h(z.union([z.object({ weekId: id }), z.object({ topicId: id })]), (i) => course.dismissError(i)),
     deleteWeek: h(z.object({ weekId: id }), (i) => course.deleteWeek(i.weekId)),
     /** Merge duplicate weeks of a course into one (nothing generated or cut; the AI only spots repeated questions); the others are removed. */
     mergeWeeks: h(z.object({ weekId: id, otherIds: z.array(id).min(1).max(30) }), async (i) => {
@@ -712,12 +715,31 @@ export const handlers = {
     }),
     /** Make today's task with your AI and publish it (a job). */
     startTask: h(z.object({ id, title: z.string().max(300) }), (i) => startJob('other', `Task: ${i.title}`, (ctx) => marketTasks.runTask(i.id, ctx))),
+    /** Add one week you asked for that's done (the "ready" card's Add): where it went. */
+    addReady: h(z.object({ id }), (i) => marketTasks.addReady(i.id)),
+    /** The card's Not now: added at the next sync instead. */
+    notNow: h(z.object({ id }), (i) => marketTasks.notNow(i.id)),
     /** Add the weeks you asked for that are done now (it also runs after each cloud sync). */
     deliver: h(none, () => marketTasks.deliverRequested({ force: true })),
     /** Topics that failed to write (any level), or weeks whose planning failed: filled from someone's published copy, when there is one. Run when a course opens. */
     fillFailed: h(z.object({ courseId: id }), (i) => marketFill.fillFailed(i.courseId)),
     /** What writing a section takes of your 5-hour limit (null without one: Ollama). */
     usageRate: h(none, () => usageEstimate.usageRate())
+  },
+  /** Deadlines from a spreadsheet you upload, and your own tasks to tick off (Home, when Settings → Home says so). */
+  deadlines: {
+    list: h(none, () => deadlines.listDeadlines()),
+    /** Pick a spreadsheet (unless given) and read its deadlines; null when nothing was picked. */
+    import: h(z.object({ file: z.string().optional() }).optional(), async (i, ctx) => {
+      const [file] = i?.file ? [i.file] : await pickFiles(winOf(ctx), [{ name: 'Spreadsheet of deadlines', extensions: ['xlsx', 'csv'] }], false)
+      return file ? deadlines.importDeadlines(file) : null
+    }),
+    setDone: h(z.object({ id, done: z.boolean() }), (i) => deadlines.setDeadlineDone(i.id, i.done)),
+    clear: h(none, () => deadlines.clearDeadlines()),
+    addTask: h(z.object({ text: z.string().min(1).max(300) }), (i) => deadlines.addTask(i.text)),
+    setTaskDone: h(z.object({ id, done: z.boolean() }), (i) => deadlines.setTaskDone(i.id, i.done)),
+    removeTask: h(z.object({ id }), (i) => deadlines.removeTask(i.id)),
+    clearDoneTasks: h(none, () => deadlines.clearDoneTasks())
   },
   stats: {
     /** Time studied, topics and card stats for the home page. */

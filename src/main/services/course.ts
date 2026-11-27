@@ -315,6 +315,24 @@ function setTopic(
   getDb().prepare(`UPDATE topics SET ${[...sets, 'updated_at = @updated_at'].join(', ')} WHERE id = @id`).run({ ...patch, updated_at: now(), id })
 }
 
+/**
+ * Dismiss a failure warning (its ✕): a week whose planning failed is back to
+ * its topics (or not planned yet), a topic that failed to write is back to
+ * written or still to write. Nothing else changes.
+ */
+export function dismissError(target: { weekId: string } | { topicId: string }): void {
+  if ('weekId' in target) {
+    const w = weekRow(target.weekId)
+    if (w.status === 'planning') return
+    const topics = getDb().prepare('SELECT 1 FROM topics WHERE week_id = ?').get(target.weekId)
+    setWeek(target.weekId, { status: w.status === 'error' ? (topics ? 'ready' : 'empty') : w.status, error: null })
+    return
+  }
+  const t = topicRow(target.topicId)
+  if (t.status === 'writing') return
+  setTopic(target.topicId, { status: t.content ? 'ready' : 'planned', error: null })
+}
+
 /** After a crash or quit, nothing is still being written. */
 export function recoverInterrupted(): void {
   const d = getDb()

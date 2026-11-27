@@ -32,6 +32,8 @@ const state = {
   courses: [] as { id: string; name: string; module: string; noContent: number[] }[],
   marks: [] as unknown[],
   plans: [] as string[],
+  /** The app's open live-events connection, to send an event down. */
+  live: null as import('node:http').ServerResponse | null,
   /** Week numbers that are on the marketplace already. */
 }
 
@@ -74,6 +76,12 @@ function fakeMarket(): Promise<string> {
     }
     const p = req.url!.split('?')[0]
     if (p === '/api/app/me') return send({ user: { name: state.me } })
+    if (p === '/api/events') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(': connected\n\n')
+      state.live = res
+      return
+    }
     if (p === '/api/tasks/today') return send({ task: state.task, on: true })
     const t = p.match(/^\/api\/tasks\/(\w+)\/(start|done)$/)
     if (t && state.task) {
@@ -317,6 +325,34 @@ describe('making a week partway', () => {
     // Asked once.
     expect(await tasks.autoAskPlanned()).toBe(0)
   }, 60_000)
+})
+
+describe('hearing a week is done straight away', () => {
+  it('offers a done week the moment the marketplace says so, once', async () => {
+    const live = await import('../../src/main/services/marketLive')
+    const repo = await import('../../src/main/db/repo')
+    state.me = 'pia'
+    state.mine = []
+    repo.setSetting('market.requestsDelivered', {})
+    const offered: string[][] = []
+    live.startMarketLive({ onReady: (rs) => offered.push(rs.map((r) => r.id)) })
+    try {
+      for (let i = 0; i < 50 && !state.live; i++) await new Promise((r) => setTimeout(r, 50))
+      expect(state.live).toBeTruthy()
+      const done = request({ id: 'd1d2d3d4e5f60718', status: 'done', weekId: 'abababababababab', doneBy: ['quin'], voted: true })
+      state.live!.write(`event: request-done\ndata: ${JSON.stringify(done)}\n\n`)
+      for (let i = 0; i < 50 && !offered.length; i++) await new Promise((r) => setTimeout(r, 20))
+      expect(offered).toEqual([['d1d2d3d4e5f60718']])
+      // Told again (say the connection came back): not offered twice.
+      state.live!.write(`event: request-done\ndata: ${JSON.stringify(done)}\n\n`)
+      await new Promise((r) => setTimeout(r, 100))
+      expect(offered).toHaveLength(1)
+    } finally {
+      live.stopMarketLive()
+      state.live?.end()
+      state.live = null
+    }
+  })
 })
 
 describe('your missing weeks', () => {

@@ -17,6 +17,7 @@ import { buildMenu } from './menu'
 import { loadWindowState, trackWindowState } from './windowState'
 import { onJobEvent, runningJobCount, setUsageProbe } from './jobs'
 import { startUsageLearning } from './services/usageEstimate'
+import { startMarketLive, stopMarketLive } from './services/marketLive'
 import { activeProvider } from './ai/models'
 import { isMock } from './ai'
 import { startUpdateChecks, buildId } from './updater'
@@ -322,6 +323,10 @@ app.whenReady().then(async () => {
   })
   startCloudSync()
   app.on('before-quit', () => stopCloudSync())
+
+  // Weeks you asked for on the marketplace, offered the moment they're done.
+  startMarketLive({ onReady: (requests) => broadcast({ type: 'market:ready', requests }) })
+  app.on('before-quit', () => stopMarketLive())
 
   onJobEvent((ev) => {
     if (ev.type === 'delta') {

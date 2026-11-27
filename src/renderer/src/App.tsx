@@ -36,6 +36,7 @@ import { Tracker } from './pages/Tracker'
 import { Market } from './pages/Market'
 import { MarketMatchesHost } from './components/MarketMatches'
 import { JobDock } from './components/JobLive'
+import { ReadyCard } from './components/ReadyCard'
 import { CoursePage } from './pages/Course'
 import { WeekPage } from './pages/Week'
 import { IS_MOBILE } from './lib/platform'
@@ -421,6 +422,8 @@ export function App() {
       <GenerateNotesModal />
       <NewCourseModal />
       <JobDock />
+      {/* A week you asked for on the marketplace is done: add it. */}
+      <ReadyCard />
       <CardPreviewModal />
       <CommandPalette />
       <ShortcutSheet />

@@ -3,36 +3,7 @@ import { keyLabel } from '@shared/keymap'
 import CodeMirror, { EditorView, type ReactCodeMirrorRef } from '@uiw/react-codemirror'
 import { markdown } from '@codemirror/lang-markdown'
 import { diffLines } from 'diff'
-import {
-  Terminal,
-  RefreshCw,
-  FolderOpen,
-  CheckCircle2,
-  XCircle,
-  Play,
-  Copy,
-  Star,
-  RotateCcw,
-  History,
-  Trash2,
-  Upload,
-  Download,
-  Plus,
-  Save,
-  Sparkles,
-  Cpu,
-  Settings as Gear,
-  Activity,
-  ListChecks,
-  Wand2,
-  Info,
-  Archive,
-  Smartphone,
-  Laptop,
-  Store,
-  WifiOff,
-  Volume2
-} from 'lucide-react'
+import { Terminal, RefreshCw, CheckCircle2, XCircle, Play, Star, RotateCcw, History, Trash2, Upload, Download, Save, Sparkles, Settings as Gear, ListChecks, Info, Archive, Smartphone, Laptop, WifiOff, Volume2 } from 'lucide-react'
 import type { UpdateStatus } from '@shared/update'
 import type { Preset, PresetVersion, CustomAction, ModelChoice, AiCall, Thresholds, AiProvider, OllamaModel } from '@shared/types'
 import { ACTION_PLACEMENTS, DEFAULT_THRESHOLDS } from '@shared/types'
@@ -53,19 +24,29 @@ import { MarketSetup } from '../components/MarketSetup'
 import { IS_MOBILE, mobile } from '../lib/platform'
 import { DEFAULT_VOICE_PROMPT, VOICE_MODELS, modelHasTags, type VoiceOption, type VoiceStatus } from '@shared/voice'
 import { setVoiceStatus, speak, stopVoice, useSpeaking } from '../lib/voice'
+import { HOME_PANEL_SETTING, type HomePanel } from '@shared/deadlines'
 
+// Fewer, bigger tabs: related settings share one, each under its own heading.
 const DESKTOP_TABS = [
   { id: 'general', label: 'General', icon: Gear },
-  { id: 'claude', label: 'AI provider', icon: Terminal },
-  { id: 'models', label: 'Models', icon: Cpu },
-  { id: 'prompts', label: 'Prompts', icon: Sparkles },
-  { id: 'actions', label: 'Custom actions', icon: Wand2 },
-  { id: 'usage', label: 'AI usage', icon: Activity },
+  { id: 'ai', label: 'AI', icon: Terminal },
+  { id: 'prompts', label: 'Prompts & actions', icon: Sparkles },
   { id: 'voice', label: 'Voice', icon: Volume2 },
-  { id: 'phone', label: 'Devices', icon: Smartphone },
-  { id: 'market', label: 'Marketplace', icon: Store },
+  { id: 'phone', label: 'Devices & marketplace', icon: Smartphone },
   { id: 'jobs', label: 'Jobs', icon: ListChecks }
 ] as const
+/** Tabs that are now part of a bigger one (links to them still work): opened there, scrolled to their heading. */
+const MERGED: Record<string, string> = { claude: 'ai', models: 'ai', usage: 'ai', actions: 'prompts', market: 'phone' }
+
+/** A heading for one part of a tab that holds several. */
+function Part({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+  return (
+    <section id={`settings-${id}`} className="scroll-mt-6 border-t border-line pt-8 first:border-t-0 first:pt-0">
+      <h2 className="mb-4 text-[1.2rem] font-semibold tracking-tight">{title}</h2>
+      {children}
+    </section>
+  )
+}
 // On the phone, AI is set up on the computer; what's left is the phone's own settings and syncing.
 const MOBILE_TABS = [
   { id: 'general', label: 'General', icon: Gear },
@@ -76,7 +57,14 @@ const TABS: readonly { id: string; label: string; icon: typeof Gear }[] = IS_MOB
 
 export function Settings({ tab = 'general' }: { tab?: string }) {
   const go = useStore((s) => s.go)
-  const cur = TABS.find((t) => t.id === tab) ? tab : 'general'
+  const wanted = IS_MOBILE ? tab : (MERGED[tab] ?? tab)
+  const cur = TABS.find((t) => t.id === wanted) ? wanted : 'general'
+  // A link to a part of a merged tab: scrolled to it.
+  useEffect(() => {
+    if (!MERGED[tab] || IS_MOBILE) return
+    const t = setTimeout(() => document.getElementById(`settings-${tab}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120)
+    return () => clearTimeout(t)
+  }, [tab])
   const running = useStore((s) => s.jobs.filter((j) => j.status === 'running').length)
   useCommands({
     'go.nextDeck': () => {
@@ -108,16 +96,40 @@ export function Settings({ tab = 'general' }: { tab?: string }) {
       </div>
       <div key={cur} className="page-in">
         {cur === 'general' && <General />}
-        {cur === 'claude' && <ProviderTab />}
-        {cur === 'models' && <ModelsTab />}
-        {cur === 'prompts' && <PromptsTab />}
-        {cur === 'actions' && <ActionsTab />}
-        {cur === 'usage' && <UsageTab />}
+        {cur === 'ai' && (
+          <div className="flex flex-col gap-10">
+            <Part id="claude" title="AI provider">
+              <ProviderTab />
+            </Part>
+            <Part id="models" title="Models">
+              <ModelsTab />
+            </Part>
+            <Part id="usage" title="AI usage">
+              <UsageTab />
+            </Part>
+          </div>
+        )}
+        {cur === 'prompts' && (
+          <div className="flex flex-col gap-10">
+            <Part id="prompts" title="Prompts">
+              <PromptsTab />
+            </Part>
+            <Part id="actions" title="Custom actions">
+              <ActionsTab />
+            </Part>
+          </div>
+        )}
         {cur === 'voice' && <VoiceTab />}
-        {cur === 'phone' && <DesktopPhoneTab />}
-        {cur === 'market' && (
-          <div className="max-w-2xl">
-            <MarketSetup />
+        {cur === 'phone' && (
+          <div className="flex flex-col gap-10">
+            <Part id="phone" title="Devices">
+              <DesktopPhoneTab />
+            </Part>
+            <Part id="market" title="Marketplace">
+              <div className="max-w-2xl">
+                <MarketSetup />
+              </div>
+            </Part>
           </div>
         )}
         {cur === 'sync' && <MobileSyncTab />}
@@ -185,6 +197,19 @@ function General() {
         <p className="desktop-only text-[0.85rem] text-muted">
           Text size: <Kbd>{keyLabel("⌘=")}</Kbd> <Kbd>{keyLabel("⌘-")}</Kbd> <Kbd>{keyLabel("⌘0")}</Kbd>. Cycle theme: <Kbd>{keyLabel("⇧⌘L")}</Kbd>.
         </p>
+      </Card>
+      <Card className="flex flex-col gap-4">
+        <h3 className="text-lg font-semibold">Home</h3>
+        <Field label="Beside the cards due" hint="Deadlines: upload a spreadsheet of your deadlines (.xlsx) and see the next one, with tasks of your own to tick off. Both sync to your other devices.">
+          <Segmented
+            value={(s[HOME_PANEL_SETTING] as HomePanel) === 'deadlines' ? 'deadlines' : 'time'}
+            onChange={(v) => void set(HOME_PANEL_SETTING, v)}
+            options={[
+              { value: 'time', label: 'Time studied today' },
+              { value: 'deadlines', label: 'Deadlines and tasks' }
+            ]}
+          />
+        </Field>
       </Card>
       <Card className="desktop-only flex flex-col gap-4">
         <h3 className="text-lg font-semibold">AI jobs</h3>

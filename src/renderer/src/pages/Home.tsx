@@ -9,6 +9,8 @@ import { Shell } from '../components/Shell'
 import { Button, Kbd, cx } from '../components/ui'
 import { ResumeCard, useResumable } from '../components/ResumeCard'
 import { TaskBanner } from '../components/MarketRequests'
+import { DeadlinesPanel } from '../components/DeadlinesPanel'
+import { HOME_PANEL_SETTING } from '@shared/deadlines'
 import { ReviewPicker, useReviewPick, useTracker } from '../components/ReviewPicker'
 import { SlidersHorizontal, Star } from 'lucide-react'
 
@@ -34,6 +36,11 @@ export function Home() {
   const [notes, setNotes] = useState<{ id: string; title: string; module: string; updated_at: string }[]>([])
   const [ov, setOv] = useState<Overview | null>(null)
   const [stats, setStats] = useState<HomeStats | null>(null)
+  // What the panel beside the cards due shows (Settings → Home): time studied, or deadlines and tasks.
+  const [panel, setPanel] = useState<'time' | 'deadlines'>('time')
+  useEffect(() => {
+    void api.settings.all().then((s) => setPanel(s[HOME_PANEL_SETTING] === 'deadlines' ? 'deadlines' : 'time'))
+  }, [version])
 
   useEffect(() => {
     void api.decks.list().then(setDecks)
@@ -149,8 +156,8 @@ export function Home() {
         </div>
 
         <ReviewPicker open={picking} onClose={() => setPicking(false)} pick={pick} onPick={setPick} />
-        {/* Time studied this week, and how it's going. */}
-        <StudyPanel stats={stats} />
+        {/* Time studied this week, or (Settings → Home) your next deadline and tasks. */}
+        {panel === 'deadlines' ? <DeadlinesPanel /> : <StudyPanel stats={stats} />}
       </section>
 
       {running.length > 0 && (

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { GraduationCap, Plus, FileText, X, Upload, Download, Store, Copy, Merge, CalendarDays, ChevronRight } from 'lucide-react'
+import { GraduationCap, Plus, FileText, X, Upload, Copy, Merge, CalendarDays, ChevronRight, ListChecks } from 'lucide-react'
 import { confirmDialog } from '../lib/dialogs'
-import { importSharedWeek } from '../lib/weekShare'
 import { IS_MOBILE } from '../lib/platform'
 import { currentWeekNumber, currentWeekToReview, type CourseFocus, type CourseSummary } from '@shared/course'
 import { CourseFocusPicker } from '../components/CourseFocus'
@@ -84,11 +83,8 @@ export function Courses() {
         title="Courses"
         actions={
           <>
-            <Button className="desktop-only" onClick={() => go({ name: 'market' })} title="Courses other people have made">
-              <Store className="size-4" /> Marketplace
-            </Button>
-            <Button className="desktop-only" onClick={() => void importSharedWeek()} title="Add a week a friend shared with you (.studyweek)">
-              <Download className="size-4" /> Add a shared week
+            <Button onClick={() => go({ name: 'tracker' })} title="Every week of every course: learnt, revised and how confident you are (g t)">
+              <ListChecks className="size-4" /> Tracker
             </Button>
             <Button variant="primary" className="desktop-only" onClick={() => openNew([])}>
               <Plus className="size-4" /> New course

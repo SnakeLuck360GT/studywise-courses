@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
-import { SlidersHorizontal, Sparkles, Play, Layers, MoreHorizontal, Pencil, Trash2, Plus, ChevronRight, Download, BellOff, CalendarDays, Scissors, StickyNote, Store, Globe, Lock, Copy, Merge, BookOpen, X } from 'lucide-react'
+import { SlidersHorizontal, Sparkles, Play, Layers, MoreHorizontal, Pencil, Trash2, Plus, ChevronRight, BellOff, CalendarDays, Scissors, StickyNote, Store, Globe, Lock, Copy, Merge, BookOpen, X } from 'lucide-react'
 import { mergeDuplicateWeeks, offerPlan, writeTopics } from '../lib/courseFlows'
 import { duplicateWeekGroups } from '@shared/weekMerge'
-import { importSharedWeek } from '../lib/weekShare'
 import { declinedMarketWeek, marketMatches, offerMarketWeek, publishAllToMarket, setCourseVisibility } from '../lib/market'
 import { TrimCardsModal } from '../components/TrimCards'
 import { READING_WEEK, asReadingWeek, showError, examPhase, isReadingWeek, missingReadingWeek, nextWeekLabel, revisionMaxGapDays, sortWeeks, weekNumber, type CourseFocus, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
@@ -125,9 +124,6 @@ export function CoursePage({ id }: { id: string }) {
                 <>
                   <MenuItem icon={<Plus className="size-4" />} onClick={() => (close(), setAdding(true))}>
                     Add a week
-                  </MenuItem>
-                  <MenuItem desktopOnly icon={<Download className="size-4" />} onClick={() => (close(), void importSharedWeek({ courseId: id }))}>
-                    Add a shared week…
                   </MenuItem>
                   {topics.some((t) => t.status === 'ready') && !c.private && (
                     <MenuItem desktopOnly icon={<Store className="size-4" />} onClick={() => (close(), void publishAllToMarket(id))}>

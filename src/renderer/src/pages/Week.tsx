@@ -34,12 +34,12 @@ import {
   Zap,
   FilePlus2,
   Merge,
-  BookOpen, UploadCloud } from 'lucide-react'
+  BookOpen, UploadCloud, Download } from 'lucide-react'
 import { NOTE_LEVEL_INFO, NOTE_LEVELS, READING_WEEK, showError, WEEK_TEST_INFO, asReadingWeek, isReadingWeek, notReadingWeek, unreviewedSections, weekNumber, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
 import { estimateText, guessNote, topicSections, useUsageRate } from '../lib/usageEstimate'
 import { mergeWeekWith, offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics, writeWeekTest } from '../lib/courseFlows'
 import { planUsageText, type JobInfo } from '@shared/types'
-import { shareWeek } from '../lib/weekShare'
+import { shareWeek, addSharedToWeek } from '../lib/weekShare'
 import { chooseMarketWeek, declinedMarketWeek, findMarketWeek, marketMatches, modelsText, publishToMarket, setWeekVisibility } from '../lib/market'
 import type { MarketMatch } from '@shared/market'
 import { useStore, toast } from '../lib/store'
@@ -290,6 +290,9 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
                   <MenuItem icon={<Share2 className="size-4" />} onClick={() => (close(), void shareWeek(w.id))}>
                     Share this week…
                   </MenuItem>
+                  <MenuItem desktopOnly icon={<Download className="size-4" />} onClick={() => (close(), void addSharedToWeek(w.id, w.label).then((ok) => ok && reload()))}>
+                    Add a shared week here…
+                  </MenuItem>
                   {blank && (
                     <MenuItem icon={<Search className="size-4" />} onClick={() => (close(), void findMarketWeek(w).then((ok) => ok && reload()))}>
                       Find on marketplace…
@@ -425,6 +428,14 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
               <Button size="sm" variant="ink" onClick={plan}>
                 Try again
               </Button>
+              <button
+                onClick={() => void api.courses.dismissError({ weekId: w.id }).then(reload)}
+                className="grid size-8 place-items-center rounded-lg text-muted hover:bg-surface hover:text-ink"
+                aria-label="Dismiss"
+                title="Dismiss: the week stays as it is"
+              >
+                <X className="size-4" />
+              </button>
             </div>
           )}
           {!planning && w.topics.length > 0 && (
@@ -688,7 +699,22 @@ function TopicRow({ t, write, saveNote, reload, onTrim }: { t: Topic; write: (to
               <Sparkles className="size-3.5" /> Writing…
             </div>
           )}
-          {t.error && !writing && showError(t) && <div className="mt-1 text-[0.85rem] text-bad">{t.status === 'ready' ? `Last write didn’t finish: ${t.error}` : t.error}</div>}
+          {t.error && !writing && showError(t) && (
+            <div className="mt-1 flex items-center gap-1.5 text-[0.85rem] text-bad">
+              <span className="min-w-0">{t.status === 'ready' ? `Last write didn’t finish: ${t.error}` : t.error}</span>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => (e.stopPropagation(), void api.courses.dismissError({ topicId: t.id }).then(reload))}
+                onKeyDown={(e) => e.key === 'Enter' && (e.stopPropagation(), void api.courses.dismissError({ topicId: t.id }).then(reload))}
+                className="grid size-5 shrink-0 place-items-center rounded text-muted hover:bg-surface-2 hover:text-ink"
+                aria-label="Dismiss"
+                title="Dismiss this warning"
+              >
+                <X className="size-3.5" />
+              </span>
+            </div>
+          )}
         </button>
         <div className="ml-auto flex shrink-0 items-center gap-2 text-[0.85rem] text-muted">
           {t.plan.minutes > 0 && (

@@ -9,7 +9,7 @@ import { canMergeNow } from '../lib/courseFlows'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
 import { MarketSetup } from '../components/MarketSetup'
-import { FinishButton, MissingWeeksBanner, MissingWeeksTab, RequestsView, WeekStrip } from '../components/MarketRequests'
+import { DonateBanner, FinishButton, MissingWeeksTab, RequestsView, WeekStrip } from '../components/MarketRequests'
 import { Button, Card, Empty, Input, Menu, MenuItem, Pill, Segmented, Spinner, cx } from '../components/ui'
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -49,9 +49,7 @@ export function Market({ courseId }: { courseId?: string }) {
 
 function MarketList() {
   const go = useStore((s) => s.go)
-  const [view, setView] = useState<'all' | 'missing' | 'mine'>('all')
-  // Bumped when the missing weeks panel has loaded (it may have just asked for some), so the wanted list shows them.
-  const [wanted, setWanted] = useState(0)
+  const [view, setView] = useState<'all' | 'wanted' | 'missing' | 'mine'>('all')
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<MarketSort>('recent')
   const [courses, setCourses] = useState<MarketCourse[] | null>(null)
@@ -87,6 +85,7 @@ function MarketList() {
               onChange={setView}
               options={[
                 { value: 'all', label: 'All courses' },
+                { value: 'wanted', label: 'Wanted weeks' },
                 { value: 'missing', label: 'Missing weeks' },
                 { value: 'mine', label: 'Published by you' }
               ]}
@@ -100,20 +99,11 @@ function MarketList() {
         <MyWeeks />
       ) : view === 'missing' ? (
         <MissingWeeksTab />
+      ) : view === 'wanted' ? (
+        <RequestsView />
       ) : (
         <>
-          {/* A line about your missing weeks (their own tab), then tasks and what people are asking for; searching shows just the courses. */}
-          {!q && (
-            <div className="mb-10 flex flex-col gap-8">
-              <MissingWeeksBanner onOpen={() => setView('missing')} onLoaded={() => setWanted((n) => n + 1)} />
-              <section>
-                <h2 className="mb-3 text-[1.15rem] font-semibold">Wanted weeks</h2>
-                <RequestsView key={wanted} compact />
-              </section>
-            </div>
-          )}
-          {!q && <h2 className="mb-3 text-[1.15rem] font-semibold">Courses</h2>}
-          <div className="mb-5 flex flex-wrap items-center gap-3">
+          <div className="mb-4 flex flex-wrap items-center gap-3">
             <div className="relative min-w-[16rem] flex-1">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
               <Input autoFocus className="pl-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search courses, modules, topics or people" />
@@ -127,6 +117,8 @@ function MarketList() {
               ]}
             />
           </div>
+          {/* Always here: weeks people are waiting for (your usage can make them), and your own missing weeks. */}
+          <DonateBanner onWanted={() => setView('wanted')} onMissing={() => setView('missing')} />
           {error && <div className="mb-4 rounded-lg bg-bad-soft px-3 py-2 text-[0.9rem] text-bad">{error}</div>}
           {!courses && !error && <Spinner />}
           {courses?.length === 0 && (
