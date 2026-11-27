@@ -540,6 +540,33 @@ export interface CourseSummary extends Course {
   ready_count: number
   done_count: number
   due_count: number
+  /** Its highest-numbered week (null with no numbered weeks), and how far through its topics you are. */
+  latest_week: LatestWeek | null
+}
+
+export interface LatestWeek {
+  id: string
+  label: string
+  number: number
+  planning: boolean
+  topic_count: number
+  done_count: number
+}
+
+/**
+ * The week everyone's on: the highest week number across all courses (week 9
+ * once any course has a week 9), or null when no course has a numbered week.
+ */
+export function currentWeekNumber(courses: { latest_week: LatestWeek | null }[]): number | null {
+  const nums = courses.flatMap((c) => (c.latest_week ? [c.latest_week.number] : []))
+  return nums.length ? Math.max(...nums) : null
+}
+
+/** The course's week for the current week number, while it still has topics left to do. */
+export function currentWeekToReview(course: { latest_week: LatestWeek | null }, current: number | null): LatestWeek | null {
+  const w = course.latest_week
+  if (!w || current === null || w.number !== current || isReadingWeek(w.label)) return null
+  return w.topic_count > 0 && w.done_count < w.topic_count ? w : null
 }
 
 // ---------------------------------------------------------------------------

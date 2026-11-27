@@ -201,8 +201,12 @@ export function courseFilePath(fileId: string): string {
 export function listCourses(): CourseSummary[] {
   const rows = (getDb().prepare('SELECT * FROM courses ORDER BY updated_at DESC').all() as RawCourseRow[]).map(toCourseRow)
   return rows.map((r) => {
-    const topics = getDb().prepare('SELECT status, progress FROM topics WHERE course_id = ?').all(r.id) as { status: string; progress: string }[]
-    const weeks = getDb().prepare('SELECT status FROM weeks WHERE course_id = ?').all(r.id) as { status: string }[]
+    const topics = getDb().prepare('SELECT week_id, status, progress FROM topics WHERE course_id = ?').all(r.id) as { week_id: string; status: string; progress: string }[]
+    const weeks = getDb().prepare('SELECT id, label, position, status FROM weeks WHERE course_id = ?').all(r.id) as { id: string; label: string; position: number; status: string }[]
+    const isDone = (t: { progress: string }) => !!json<Partial<TopicProgress>>(t.progress, {}).done
+    // The highest-numbered week (the last one in week order that has a number).
+    const top = sortWeeks(weeks).filter((w) => weekNumber(w.label) !== null).pop()
+    const topTopics = top ? topics.filter((t) => t.week_id === top.id) : []
     let due = 0
     for (const d of recallDeckIds(r.id)) {
       try {
@@ -218,8 +222,18 @@ export function listCourses(): CourseSummary[] {
       planning: weeks.some((w) => w.status === 'planning'),
       topic_count: topics.length,
       ready_count: topics.filter((t) => t.status === 'ready').length,
-      done_count: topics.filter((t) => json<Partial<TopicProgress>>(t.progress, {}).done).length,
-      due_count: due
+      done_count: topics.filter(isDone).length,
+      due_count: due,
+      latest_week: top
+        ? {
+            id: top.id,
+            label: top.label,
+            number: weekNumber(top.label)!,
+            planning: top.status === 'planning',
+            topic_count: topTopics.length,
+            done_count: topTopics.filter(isDone).length
+          }
+        : null
     }
   })
 }

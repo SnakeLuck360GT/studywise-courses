@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { GraduationCap, Plus, FileText, X, Upload, Download, Store, Copy, Merge } from 'lucide-react'
+import { GraduationCap, Plus, FileText, X, Upload, Download, Store, Copy, Merge, CalendarDays, ChevronRight } from 'lucide-react'
 import { confirmDialog } from '../lib/dialogs'
 import { importSharedWeek } from '../lib/weekShare'
 import { IS_MOBILE } from '../lib/platform'
-import type { CourseFocus, CourseSummary } from '@shared/course'
+import { currentWeekNumber, currentWeekToReview, type CourseFocus, type CourseSummary } from '@shared/course'
 import { CourseFocusPicker } from '../components/CourseFocus'
 import { useStore, toast } from '../lib/store'
 import { api, errorText } from '../lib/api'
@@ -73,6 +73,10 @@ export function Courses() {
   useEffect(() => void api.courses.list().then(setCourses), [version])
   // A topic (or a course's flashcards) you left partway through.
   const [resumable, dismissResumable] = useResumable(version, LAST_COURSE_SESSION_SETTING)
+  // The week everyone's on (the highest week number in any course): each course
+  // still to review that week shows how far through it you are.
+  const current = courses ? currentWeekNumber(courses) : null
+  const toReview = (courses ?? []).filter((c) => currentWeekToReview(c, current)).length
 
   return (
     <Shell>
@@ -98,6 +102,14 @@ export function Courses() {
       </PageTitle>
       {resumable && <ResumeCard r={resumable} onContinue={() => go(resumable.session.route)} onDismiss={dismissResumable} />}
       <DuplicateCourses />
+      {current !== null && toReview > 0 && (
+        <div className="mb-3 flex items-center gap-2 text-[0.92rem] text-muted">
+          <CalendarDays className="size-4 shrink-0 text-accent" />
+          <span>
+            <span className="font-semibold text-ink">Week {current}</span>: {toReview === 1 ? '1 course' : `${toReview} courses`} still to review
+          </span>
+        </div>
+      )}
       {courses && courses.length === 0 && (
         <Empty icon={<GraduationCap className="size-8" />} title="No courses yet">
           {IS_MOBILE ? (
@@ -126,11 +138,39 @@ export function Courses() {
               {c.week_count} week{c.week_count === 1 ? '' : 's'} · {c.topic_count ? `${c.topic_count} topic${c.topic_count === 1 ? '' : 's'} · ${c.done_count} done` : c.planning ? 'planning topics…' : 'no topics yet'}
             </div>
             {c.topic_count > 0 && <ProgressBar value={c.done_count / c.topic_count} />}
+            <CurrentWeek course={c} current={current} />
             {c.due_count > 0 && <div className="text-[0.85rem] font-semibold text-accent">{c.due_count} recall card{c.due_count === 1 ? '' : 's'} due</div>}
           </Card>
         ))}
       </div>
     </Shell>
+  )
+}
+
+/** This week's progress on a course card, while it still has topics to do: opens the week. */
+function CurrentWeek({ course, current }: { course: CourseSummary; current: number | null }) {
+  const go = useStore((s) => s.go)
+  const w = currentWeekToReview(course, current)
+  if (!w) return null
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation()
+        go({ name: 'week', courseId: course.id, weekId: w.id })
+      }}
+      title={`Open ${w.label}`}
+      className="flex flex-col gap-1.5 rounded-lg bg-accent-soft px-3 py-2 text-left transition-colors hover:bg-accent-soft/70"
+    >
+      <span className="flex items-center gap-1.5 text-[0.85rem]">
+        <span className="font-semibold text-accent">Week {w.number}</span>
+        <span className="text-muted">
+          · {w.done_count} of {w.topic_count} topic{w.topic_count === 1 ? '' : 's'} done
+        </span>
+        <ChevronRight className="ml-auto size-4 text-muted" />
+      </span>
+      <ProgressBar value={w.done_count / w.topic_count} />
+    </button>
   )
 }
 

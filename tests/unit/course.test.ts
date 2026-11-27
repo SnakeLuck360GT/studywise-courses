@@ -596,3 +596,33 @@ describe('dropping a shared week into an existing week', () => {
     expect(svc.listFiles(mine.id).map((f) => f.name)).toEqual(['notes.txt', 'notes (2).txt'])
   })
 })
+
+describe('the current week on the Courses page', () => {
+  it('reports each course’s latest week and picks the highest week number across courses', async () => {
+    const { currentWeekNumber, currentWeekToReview } = await import('../../src/shared/course')
+    const a = svc.createCourse({ name: 'Latest A', level: 'first-year' })
+    svc.addWeek(a.id, 'Week 8')
+    const a9 = svc.addWeek(a.id, 'Week 9')
+    svc.addWeek(a.id, 'Revision') // no number: not the latest week
+    await svc.addFiles(a9.id, [resolve('tests/fixtures/photoelectric-lecture.pdf')])
+    await svc.planWeek(a9.id, ctx())
+    const b = svc.createCourse({ name: 'Latest B', level: 'first-year' })
+    svc.addWeek(b.id, 'Week 8')
+
+    const latest = (id: string) => svc.listCourses().find((x) => x.id === id)!
+    const topics = svc.listTopics(a.id)
+    expect(latest(a.id).latest_week).toMatchObject({ id: a9.id, number: 9, topic_count: topics.length, done_count: 0 })
+    expect(latest(b.id).latest_week).toMatchObject({ number: 8, topic_count: 0 })
+
+    const current = currentWeekNumber([latest(a.id), latest(b.id)])
+    expect(current).toBe(9)
+    expect(currentWeekToReview(latest(a.id), current)?.id).toBe(a9.id)
+    expect(currentWeekToReview(latest(b.id), current)).toBeNull() // no week 9 yet
+
+    // Every topic done: reviewed, so it stops showing.
+    for (const t of topics) svc.saveProgress(t.id, { section: 0, done: true, answered: 0, correct: 0, checkScore: null, checkTotal: null, lastStudied: null })
+    expect(latest(a.id).latest_week!.done_count).toBe(topics.length)
+    expect(currentWeekToReview(latest(a.id), current)).toBeNull()
+    expect(currentWeekNumber([])).toBeNull()
+  })
+})
