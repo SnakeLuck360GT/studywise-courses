@@ -31,7 +31,10 @@ function DeadlineRow({ d, today, onDone }: { d: Deadline; today: string; onDone:
   return (
     <li className="group flex items-center gap-2 rounded-md px-1 py-[3px] hover:bg-surface-2/60" title={[d.title, nameOf(d), `${whenText(d.due, today)}, ${dayText(d.due)}`].filter(Boolean).join(' · ')}>
       <span className={cx('w-[4.3rem] shrink-0 rounded px-1 py-[1px] text-center text-[0.72rem] font-semibold tabular', tone)}>{soon(d.due, today)}</span>
-      <span className="min-w-0 flex-1 truncate text-[0.88rem] font-medium">{d.title}</span>
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <span className="min-w-0 truncate text-[0.88rem] font-medium">{d.title}</span>
+        {d.module && <span className="shrink-0 text-[0.72rem] text-muted tabular">{d.module}</span>}
+      </span>
       <span className="shrink-0 text-[0.75rem] text-muted tabular group-hover:hidden">{dayText(d.due)}</span>
       <button
         onClick={onDone}
