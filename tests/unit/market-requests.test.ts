@@ -22,7 +22,13 @@ const state = {
   task: null as MarketTask | null,
   mine: [] as WeekRequest[],
   published: null as Buffer | null,
-  done: [] as { id: string; body: unknown }[]
+  onMarket: [] as number[],
+  done: [] as { id: string; body: unknown }[],
+  // Requests the fake marketplace has, how many times one was asked for, and files sent with them.
+  requests: [] as WeekRequest[],
+  asks: 0,
+  uploads: [] as string[],
+  /** Week numbers that are on the marketplace already. */
 }
 
 const request = (over: Partial<WeekRequest> = {}): WeekRequest => ({
@@ -76,6 +82,20 @@ function fakeMarket(): Promise<string> {
       return res.end(readFileSync(PDF))
     }
     if (p === '/api/requests/mine') return send({ requests: state.mine })
+    if (p === '/api/requests' && req.method === 'GET') return send({ requests: state.requests })
+    if (p === '/api/requests' && req.method === 'POST') {
+      state.asks++
+      const b = JSON.parse(body.toString()) as { number: number; course: { name: string } }
+      if (state.onMarket.includes(b.number)) return send({ error: 'on the marketplace already', weekId: '1111222233334444', courseId: '5555666677778888' }, 409)
+      const r = request({ id: `${'0'.repeat(15)}${state.requests.length + 1}`, course: b.course.name, number: b.number, label: `Week ${b.number}`, files: [], ready: false, votes: 1, voted: true, mine: true, inProgress: false, yours: false })
+      state.requests.push(r)
+      return send({ request: r })
+    }
+    const up = p.match(/^\/api\/requests\/(\w+)\/files$/)
+    if (up && req.method === 'POST') {
+      state.uploads.push(decodeURIComponent(req.url!.split('name=')[1]))
+      return send({ request: state.requests.find((r) => r.id === up[1]) ?? request() })
+    }
     if (p === '/api/weeks' && req.method === 'POST') {
       state.published = body
       return send({ week: { id: 'feedfacefeedface', courseId: 'c0ffeec0ffeec0ff', label: 'Week 3', topics: [], files: [], writtenWith: [] } })
@@ -174,6 +194,52 @@ describe('doing a task (mock AI)', () => {
     ])
     expect(mine[1].sections).toBeGreaterThan(0)
     await expect(tasks.askForMyWeek(priv.id)).rejects.toThrow(/private/)
+  })
+})
+
+describe('your missing weeks', () => {
+  it('asks for gaps up to your latest week once, offers ones on the marketplace, and shares your slides', async () => {
+    const tasks = await import('../../src/main/services/marketTasks')
+    const course = await import('../../src/main/services/course')
+    const { getDb } = await import('../../src/main/db')
+    const written = (weekId: string, courseId: string) =>
+      getDb()
+        .prepare("INSERT INTO topics (id, course_id, week_id, key, position, plan, status, error, content, progress, updated_at) VALUES (?, ?, ?, 'w1t1', 0, '{}', 'ready', NULL, '{}', '{}', '')")
+        .run(`t-${weekId}`, courseId, weekId)
+    const c = course.createCourse({ name: 'Gaps 101', level: '' })
+    written(course.addWeek(c.id, 'Week 1').id, c.id)
+    const blank = course.addWeek(c.id, 'Week 2')
+    await course.addFiles(blank.id, [PDF])
+    written(course.addWeek(c.id, 'Week 4').id, c.id)
+    state.onMarket = [3]
+    state.requests = []
+    state.asks = 0
+
+    const info = await tasks.missingWeeks()
+    const mine = info.missing.filter((m) => m.courseId === c.id)
+    // Weeks 2 (blank, with your slides) and 3 (missing); not 5 onwards (you haven't got there), never 6.
+    expect(mine.map((m) => [m.number, m.files, !!m.request, m.available?.weekId ?? null])).toEqual([
+      [2, 1, true, null],
+      [3, 0, false, '1111222233334444']
+    ])
+    const asks = state.asks
+    // Asked once: not again next time.
+    await tasks.missingWeeks()
+    expect(state.asks).toBe(asks)
+
+    // Your slides go with the request.
+    await tasks.shareSlides({ weekId: blank.id, requestId: mine[0].request!.id })
+    expect(state.uploads).toEqual(['photoelectric-lecture.pdf'])
+
+    // Turned off: a new gap isn't asked for, just listed.
+    tasks.setAutoRequest(false)
+    const d = course.createCourse({ name: 'Gaps 202', level: '' })
+    written(course.addWeek(d.id, 'Week 2').id, d.id)
+    const off = await tasks.missingWeeks()
+    expect(off.autoRequest).toBe(false)
+    expect(off.missing.filter((m) => m.courseId === d.id).map((m) => [m.number, m.request])).toEqual([[1, null]])
+    expect(state.asks).toBe(asks)
+    tasks.setAutoRequest(true)
   })
 })
 

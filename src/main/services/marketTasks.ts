@@ -18,9 +18,9 @@ import { getDb } from '../db'
 import { getSetting, setSetting } from '../db/repo'
 import { addFiles, addWeek, createCourse, deleteWeek, getCourse, listCourses, planWeek, updateWeekFrom, writeTopic } from './course'
 import { importWeek, weekZip } from './weekShare'
-import { contributeTo, copies, download, isWeekPrivate, json, linkedCourses, marketAuth, publish, recordAdded, request, send, test, updateFromMarket } from './market'
+import { MarketError, contributeTo, copies, download, isWeekPrivate, json, linkedCourses, marketAuth, publish, recordAdded, request, send, test, updateFromMarket } from './market'
 import type { JobContext } from '../jobs'
-import { IMPORTED_WEEKS_SETTING, READING_WEEK, REQUESTS_DELIVERED_SETTING, WEEKS_PER_MODULE, requestTitle, sameCourse, weekNumber, type MarketTask, type WeekRequest } from '@shared/market'
+import { AUTO_REQUEST_SETTING, IMPORTED_WEEKS_SETTING, READING_WEEK, REQUESTS_DELIVERED_SETTING, TEACHING_WEEKS, WEEKS_PER_MODULE, requestTitle, sameCourse, weekNumber, type MarketTask, type MissingInfo, type MissingWeek, type SlidesWanted, type WeekRequest } from '@shared/market'
 
 /** Which week here each task is being made in, so a task that stopped part way carries on: {taskId: weekId}. */
 const TASK_WEEKS_SETTING = 'market.taskWeeks'
@@ -388,4 +388,118 @@ async function addRequested(r: WeekRequest): Promise<boolean> {
   } finally {
     rmSync(file, { force: true })
   }
+}
+
+// ---------------------------------------------------------------------------
+// Your missing weeks: asked for automatically, and a prompt to add their slides
+
+/** Weeks already asked for automatically (or found on the marketplace), so the server isn't asked again: {"courseId:number": requestId | "available:weekId:courseId"}. */
+const AUTO_ASKED_SETTING = 'market.autoAsked'
+const autoAsked = () => getSetting<Record<string, string>>(AUTO_ASKED_SETTING, {})
+export const autoRequestOn = () => getSetting<boolean>(AUTO_REQUEST_SETTING, true) !== false
+
+/** Not more often than this in the background (opening the marketplace always checks). */
+const AUTO_GAP_MS = 30 * 60_000
+let lastAuto = 0
+
+/**
+ * Teaching weeks of your public courses up to the latest one you have (a gap
+ * like week 3 when you have 1, 2 and 4, or a week of yours with nothing
+ * written), and which are asked for or on the marketplace already. With
+ * automatic requests on, any not asked for yet are asked for now (your vote).
+ */
+export async function missingWeeks({ background = false } = {}): Promise<MissingInfo> {
+  const auto = autoRequestOn()
+  const empty: MissingInfo = { missing: [], slidesWanted: [], autoRequest: auto }
+  if (!marketAuth()) return empty
+  if (background && (!auto || Date.now() - lastAuto < AUTO_GAP_MS)) return empty
+  lastAuto = Date.now()
+  const d = getDb()
+  const courses = (d.prepare('SELECT id, name, module, level FROM courses WHERE private = 0 ORDER BY name COLLATE NOCASE').all() as { id: string; name: string; module: string; level: string }[])
+  const weeksOf = d.prepare('SELECT id, label FROM weeks WHERE course_id = ? AND private = 0')
+  const writtenIn = d.prepare("SELECT COUNT(*) n FROM topics WHERE week_id = ? AND status = 'ready'")
+  const filesIn = d.prepare('SELECT COUNT(*) n FROM course_files WHERE week_id = ?')
+  const requests = await listRequests()
+  const sameAs = (c: { name: string; module: string }, r: WeekRequest) => sameCourse({ name: c.name, module: c.module }, { name: r.course, module: r.module })
+  const asked = autoAsked()
+  const missing: MissingWeek[] = []
+  const slidesWanted: SlidesWanted[] = []
+
+  for (const c of courses) {
+    const byNumber = new Map<number, { id: string; written: number; files: number }>()
+    for (const w of weeksOf.all(c.id) as { id: string; label: string }[]) {
+      const n = weekNumber(w.label)
+      if (n === null || n < 1 || n > WEEKS_PER_MODULE) continue
+      const info = { id: w.id, written: (writtenIn.get(w.id) as { n: number }).n, files: (filesIn.get(w.id) as { n: number }).n }
+      const had = byNumber.get(n)
+      // Two weeks with one number: the one with more written counts.
+      if (!had || info.written > had.written) byNumber.set(n, info)
+    }
+    const latest = Math.max(0, ...byNumber.keys())
+    for (const n of TEACHING_WEEKS.filter((x) => x <= latest)) {
+      const mine = byNumber.get(n)
+      if (mine?.written) continue
+      const key = `${c.id}:${n}`
+      let request = requests.find((r) => r.kind === 'week' && r.number === n && sameAs(c, r)) ?? null
+      let available: MissingWeek['available'] = null
+      const remembered = asked[key]
+      if (remembered?.startsWith('available:')) {
+        const [, weekId, courseId] = remembered.split(':')
+        available = { weekId, courseId }
+      }
+      if (request?.status === 'done' && request.weekId && request.courseId) available = { weekId: request.weekId, courseId: request.courseId }
+      if (!request && !available && auto && !remembered) {
+        try {
+          request = await askForWeek({ course: { name: c.name, module: c.module, level: c.level }, number: n })
+          setSetting(AUTO_ASKED_SETTING, { ...autoAsked(), [key]: request.id })
+        } catch (e) {
+          // On the marketplace already: offered to add instead.
+          const data = e instanceof MarketError && e.status === 409 ? e.data : null
+          if (data && typeof data.weekId === 'string' && typeof data.courseId === 'string') {
+            available = { weekId: data.weekId, courseId: data.courseId }
+            setSetting(AUTO_ASKED_SETTING, { ...autoAsked(), [key]: `available:${data.weekId}:${data.courseId}` })
+          } else console.warn(`Couldn’t ask for ${c.name} · Week ${n}: ${(e as Error).message}`)
+        }
+      }
+      if (request?.status === 'done') request = null
+      missing.push({ courseId: c.id, course: c.name, number: n, weekId: mine?.id ?? null, files: mine?.files ?? 0, request, available })
+    }
+    // Someone else's requests for this course that need slides: you may have them.
+    for (const r of requests) {
+      if (r.kind !== 'week' || r.status !== 'open' || r.ready || r.number === null || !sameAs(c, r)) continue
+      if (missing.some((m) => m.request?.id === r.id)) continue
+      const mine = byNumber.get(r.number)
+      slidesWanted.push({ request: r, weekId: mine?.id ?? null, files: mine?.files ?? 0 })
+    }
+  }
+  return { missing, slidesWanted, autoRequest: auto }
+}
+
+export function setAutoRequest(on: boolean): void {
+  setSetting(AUTO_REQUEST_SETTING, on)
+  lastAuto = 0
+}
+
+/**
+ * Send the slides in one of your weeks with a request (yours or someone
+ * else's), so someone can make it. Without a request yet, the week is asked
+ * for first.
+ */
+export async function shareSlides(input: { weekId: string; requestId?: string }): Promise<WeekRequest> {
+  if (isWeekPrivate(input.weekId)) throw new Error('This week is private, so its files stay here. Make it public first.')
+  const files = getDb().prepare('SELECT path FROM course_files WHERE week_id = ? ORDER BY position').all(input.weekId) as { path: string }[]
+  if (!files.length) throw new Error('That week has no slides or transcripts in it yet.')
+  let id = input.requestId
+  if (!id) {
+    const w = getDb().prepare('SELECT w.label, c.name, c.module, c.level FROM weeks w JOIN courses c ON c.id = w.course_id WHERE w.id = ?').get(input.weekId) as { label: string; name: string; module: string; level: string }
+    id = (await askForWeek({ course: { name: w.name, module: w.module, level: w.level }, number: weekNumber(w.label)! })).id
+  }
+  return addRequestFiles(id, files.map((f) => f.path))
+}
+
+/** Ask for one of your missing weeks (when automatic requests are off) and send slides you picked with it. */
+export async function askWithFiles(input: { courseId: string; number: number; files: string[] }): Promise<WeekRequest> {
+  const c = getCourse(input.courseId)
+  const r = await askForWeek({ course: { name: c.name, module: c.module, level: c.level }, number: input.number })
+  return input.files.length ? addRequestFiles(r.id, input.files) : r
 }

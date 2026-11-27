@@ -470,7 +470,7 @@ function Page({ route }: { route: Route }) {
     case 'courses':
       return <Courses />
     case 'market':
-      return <Market key={`${route.courseId ?? ''}${route.tab ?? ''}`} courseId={route.courseId} tab={route.tab} />
+      return <Market key={route.courseId ?? ''} courseId={route.courseId} />
     case 'course':
       return <CoursePage id={route.id} />
     case 'week':

@@ -681,6 +681,13 @@ export const handlers = {
     /** Upload slides for a requested week (picked with app.pickFiles). */
     addRequestFiles: h(z.object({ id, files: z.array(z.string()).min(1).max(60) }), (i) => marketTasks.addRequestFiles(i.id, i.files)),
     removeRequestFile: h(z.object({ id, fileId: id }), (i) => marketTasks.removeRequestFile(i.id, i.fileId)),
+    /** Your courses' missing weeks (asked for automatically unless that's off), and requests for your courses that need slides. */
+    missing: h(none, () => marketTasks.missingWeeks()),
+    setAutoRequest: h(z.object({ on: z.boolean() }), (i) => marketTasks.setAutoRequest(i.on)),
+    /** Send the slides in one of your weeks with a request (asking for the week first if needed). */
+    shareSlides: h(z.object({ weekId: id, requestId: z.string().optional() }), (i) => marketTasks.shareSlides(i)),
+    /** Ask for one of your missing weeks with slides you picked. */
+    askWithFiles: h(z.object({ courseId: id, number: z.number().int(), files: z.array(z.string()).max(60) }), (i) => marketTasks.askWithFiles(i)),
     /** Today's task (one a day at most), and whether you get tasks. */
     task: h(none, () => marketTasks.todayTask()),
     skipTask: h(z.object({ id }), (i) => marketTasks.skipTask(i.id)),

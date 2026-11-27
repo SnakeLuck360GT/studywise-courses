@@ -344,3 +344,38 @@ export function usageText(share: number): string {
   const pct = Math.round(share * 100)
   return pct < 1 ? 'under 1% of your 5-hour limit' : `about ${pct}% of your 5-hour limit`
 }
+
+/** Settings: ask for your courses' missing weeks automatically (on unless turned off). */
+export const AUTO_REQUEST_SETTING = 'market.autoRequest'
+
+/**
+ * A teaching week of one of your courses you don't have written, up to the
+ * latest week you've got to (week 6, reading week, never counts).
+ */
+export interface MissingWeek {
+  courseId: string
+  course: string
+  number: number
+  /** Your week with that number, if you have one (blank, or not written). */
+  weekId: string | null
+  /** Slides and transcripts in that week of yours. */
+  files: number
+  /** The request for it (yours, or someone else's you can vote for). */
+  request: WeekRequest | null
+  /** On the marketplace already: add it instead. */
+  available: { weekId: string; courseId: string } | null
+}
+
+/** A week of one of your courses someone asked for that has no slides yet: maybe you have them. */
+export interface SlidesWanted {
+  request: WeekRequest
+  /** Your week with that number and how many files it has (0: none). */
+  weekId: string | null
+  files: number
+}
+
+export interface MissingInfo {
+  missing: MissingWeek[]
+  slidesWanted: SlidesWanted[]
+  autoRequest: boolean
+}

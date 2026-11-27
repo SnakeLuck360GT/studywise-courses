@@ -26,7 +26,7 @@ export type Route =
   /** A week's end-of-week test (multiple choice). */
   | { name: 'weektest'; courseId: string; weekId: string }
   /** The course marketplace; with courseId, one course's weeks. */
-  | { name: 'market'; courseId?: string; tab?: 'requests' }
+  | { name: 'market'; courseId?: string }
 
 export interface Toast {
   id: number

@@ -4,9 +4,9 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { CalendarCheck, Check, FileText, HandHeart, Paperclip, Plus, Sparkles, ThumbsUp, Trash2, X } from 'lucide-react'
-import { READING_WEEK, TEACHING_WEEKS, WEEKS_PER_MODULE, requestTitle, usageText, weekNumber, type MarketTask, type MarketWeek, type UsageRate, type WeekRequest } from '@shared/market'
+import { READING_WEEK, TEACHING_WEEKS, WEEKS_PER_MODULE, requestTitle, usageText, weekNumber, type MarketTask, type MarketWeek, type MissingInfo, type MissingWeek, type SlidesWanted, type UsageRate, type WeekRequest } from '@shared/market'
 import { api, errorText } from '../lib/api'
-import { addMarketWeek } from '../lib/market'
+import { addMarketWeek, downloadMarketCourse } from '../lib/market'
 import { chooseDialog, confirmDialog } from '../lib/dialogs'
 import { toast, useStore } from '../lib/store'
 import { guessNote, useUsageRate } from '../lib/usageEstimate'
@@ -132,8 +132,8 @@ export function TaskBanner() {
             </Button>
           </>
         )}
-        <Button variant="ghost" onClick={() => go({ name: 'market', tab: 'requests' })}>
-          Requests
+        <Button variant="ghost" onClick={() => go({ name: 'market' })}>
+          Marketplace
         </Button>
       </div>
     </section>
@@ -143,8 +143,9 @@ export function TaskBanner() {
 // ---------------------------------------------------------------------------
 // The Requests tab
 
-/** Everything people have asked for, your task settings, and asking for more. */
-export function RequestsView() {
+/** Everything people have asked for, your task settings, and asking for more. compact: the most wanted few, with the rest a click away (the marketplace's front page). */
+export function RequestsView({ compact = false }: { compact?: boolean }) {
+  const [all, setAll] = useState(!compact)
   const version = useStore((s) => s.version)
   const rate = useUsageRate()
   const [requests, setRequests] = useState<WeekRequest[] | null>(null)
@@ -159,11 +160,12 @@ export function RequestsView() {
       })
       .catch((e) => setError(errorText(e)))
   useEffect(load, [version])
+  const SHOWN = 6
   const groups = useMemo(() => {
     const m = new Map<string, WeekRequest[]>()
-    for (const r of requests ?? []) m.set(r.course, [...(m.get(r.course) ?? []), r])
+    for (const r of all ? (requests ?? []) : (requests ?? []).slice(0, SHOWN)) m.set(r.course, [...(m.get(r.course) ?? []), r])
     return [...m.entries()]
-  }, [requests])
+  }, [requests, all])
 
   const askMine = async () => {
     const weeks = await api.market.askable().catch(() => [])
@@ -224,6 +226,11 @@ export function RequestsView() {
           </div>
         </section>
       ))}
+      {!all && (requests?.length ?? 0) > SHOWN && (
+        <Button className="self-start" variant="ghost" onClick={() => setAll(true)}>
+          Show all {requests!.length} wanted weeks
+        </Button>
+      )}
       <AskDialog open={asking} onClose={() => setAsking(false)} onAsked={load} />
     </div>
   )
@@ -618,5 +625,193 @@ export function FinishButton({ week, request, onChange }: { week: MarketWeek; re
     >
       <HandHeart className="size-4" /> {request ? `${request.votes} asked for the rest${request.voted ? ' (you)' : ''}` : 'Ask for the rest'}
     </Button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Your missing weeks, on the marketplace's front page
+
+/**
+ * Weeks of your courses you don't have (gaps up to the latest week you've
+ * got to): asked for automatically, with a prompt to add their slides, or
+ * an Add when they're on the marketplace already. Below them, weeks of your
+ * courses others asked for that still need slides.
+ */
+export function MissingWeeksPanel({ onLoaded }: { onLoaded?: () => void }) {
+  const version = useStore((s) => s.version)
+  const [info, setInfo] = useState<MissingInfo | null>(null)
+  const load = () =>
+    void api.market
+      .missing()
+      .then((i) => {
+        setInfo(i)
+        // It may have just asked for weeks: the wanted list shows them.
+        onLoaded?.()
+      })
+      .catch(() => setInfo(null))
+  useEffect(load, [version])
+  // Weeks on the marketplace already: one row per course, to add them all.
+  const available = useMemo(() => {
+    const m = new Map<string, { course: string; marketCourseId: string; numbers: number[] }>()
+    for (const x of info?.missing ?? []) {
+      if (!x.available) continue
+      const g = m.get(x.courseId) ?? { course: x.course, marketCourseId: x.available.courseId, numbers: [] }
+      g.numbers.push(x.number)
+      m.set(x.courseId, g)
+    }
+    return [...m.entries()]
+  }, [info])
+  if (!info || (!info.missing.length && !info.slidesWanted.length)) return null
+  const setAuto = async (on: boolean) => {
+    try {
+      await api.market.setAutoRequest({ on })
+      load()
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    }
+  }
+  return (
+    <section className="rounded-2xl border border-[color-mix(in_oklab,var(--accent)_30%,var(--line))] bg-accent-soft/40 p-5">
+      {info.missing.length > 0 && (
+        <>
+          <div className="flex flex-wrap items-start gap-x-6 gap-y-2">
+            <div className="min-w-[16rem] flex-1">
+              <h2 className="text-[1.05rem] font-semibold">Your missing weeks</h2>
+              <p className="text-[0.88rem] text-muted">
+                Weeks of your courses you don’t have yet. Got the slides? Upload them, and someone donating their usage can make the week. It comes into your course when it’s done.
+              </p>
+            </div>
+            <Toggle checked={info.autoRequest} onChange={(v) => void setAuto(v)} label={<span className="text-[0.9rem]">Ask for them automatically</span>} />
+          </div>
+          <div className="mt-3 flex flex-col gap-1.5">
+            {available.map(([courseId, g]) => (
+              <div key={courseId} className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface px-4 py-2.5">
+                <div className="min-w-[12rem] flex-1">
+                  <span className="font-medium">{weekList(g.numbers)}</span> <span className="text-muted">· {g.course}</span>
+                  <div className="text-[0.84rem] text-muted">On the marketplace already: nothing to generate</div>
+                </div>
+                <Button size="sm" variant="primary" onClick={() => void downloadMarketCourse({ id: g.marketCourseId, name: g.course }, 'missing').then((ok) => ok && load())}>
+                  {g.numbers.length === 1 ? 'Add it' : 'Add them'}
+                </Button>
+              </div>
+            ))}
+            {info.missing
+              .filter((m) => !m.available)
+              .map((m) => (
+                <MissingRow key={`${m.courseId}:${m.number}`} m={m} onChange={load} />
+              ))}
+          </div>
+        </>
+      )}
+      {info.slidesWanted.length > 0 && (
+        <>
+          <h3 className={cx('font-semibold', info.missing.length > 0 && 'mt-5')}>Slides wanted for your courses</h3>
+          <p className="text-[0.88rem] text-muted">People asked for these weeks, but nobody has added the slides. If you have them, upload them.</p>
+          <div className="mt-3 flex flex-col gap-1.5">
+            {info.slidesWanted.map((w) => (
+              <SlidesWantedRow key={w.request.id} w={w} onChange={load} />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
+/** "Week 3", "Weeks 1, 2 and 5". */
+const weekList = (ns: number[]) => (ns.length === 1 ? `Week ${ns[0]}` : `Weeks ${ns.slice(0, -1).join(', ')} and ${ns[ns.length - 1]}`)
+
+/** Upload slides you pick, or the ones already in your week. */
+function SlideButtons({ files, onPick, onShare, busy }: { files: number; onPick: () => void; onShare: () => void; busy: string | null }) {
+  return (
+    <>
+      {files > 0 && (
+        <Button size="sm" variant="primary" loading={busy === 'share'} onClick={onShare} title="Upload the slides and transcripts already in your week">
+          <Paperclip className="size-4" /> Share my {plural(files, 'file')}
+        </Button>
+      )}
+      <Button size="sm" variant={files > 0 ? 'ghost' : 'primary'} loading={busy === 'pick'} onClick={onPick}>
+        <Paperclip className="size-4" /> Upload slides
+      </Button>
+    </>
+  )
+}
+
+function useBusy(onChange: () => void) {
+  const [busy, setBusy] = useState<string | null>(null)
+  const run = async (what: string, fn: () => Promise<unknown>, done?: string) => {
+    setBusy(what)
+    try {
+      await fn()
+      if (done) toast(done, 'good')
+      onChange()
+    } catch (e) {
+      toast(errorText(e), 'bad')
+    } finally {
+      setBusy(null)
+    }
+  }
+  return { busy, run }
+}
+
+function MissingRow({ m, onChange }: { m: MissingWeek; onChange: () => void }) {
+  const { busy, run } = useBusy(onChange)
+  const r = m.request
+  const thanks = `Thanks: someone can make Week ${m.number} of ${m.course} now. It comes into your course when it’s done.`
+  const pick = async () => {
+    const files = await api.app.pickFiles({ kind: 'course' })
+    if (!files.length) return
+    await run('pick', () => (r ? api.market.addRequestFiles({ id: r.id, files }) : api.market.askWithFiles({ courseId: m.courseId, number: m.number, files })), thanks)
+  }
+  const share = () => run('share', () => api.market.shareSlides({ weekId: m.weekId!, requestId: r?.id }), thanks)
+  const state = m.available
+    ? 'On the marketplace already'
+    : !r
+      ? 'Not asked for'
+      : r.inProgress
+        ? 'Being made'
+        : r.ready
+          ? `Has slides · waiting for someone to make it${r.votes > 1 ? ` · ${r.votes} want it` : ''}`
+          : `Needs slides${r.votes > 1 ? ` · ${r.votes} want it` : ''}`
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface px-4 py-2.5">
+      <div className="min-w-[12rem] flex-1">
+        <span className="font-medium">Week {m.number}</span> <span className="text-muted">· {m.course}</span>
+        <div className="text-[0.84rem] text-muted">{state}</div>
+      </div>
+      {m.available ? (
+        <Button size="sm" variant="primary" onClick={() => void addMarketWeek({ id: m.available!.weekId, mine: false, courseId: m.available!.courseId }).then((ok) => ok && onChange())}>
+          Add to my course
+        </Button>
+      ) : r && !r.voted ? (
+        <Button size="sm" loading={busy === 'vote'} onClick={() => void run('vote', () => api.market.vote({ id: r.id, on: true }))}>
+          <ThumbsUp className="size-4" /> I want it too
+        </Button>
+      ) : !r ? (
+        <Button size="sm" loading={busy === 'ask'} onClick={() => void run('ask', () => api.market.ask({ course: { name: m.course }, number: m.number }))}>
+          Ask for it
+        </Button>
+      ) : null}
+      {!m.available && !r?.ready && <SlideButtons files={m.files} onPick={() => void pick()} onShare={() => void share()} busy={busy} />}
+    </div>
+  )
+}
+
+function SlidesWantedRow({ w, onChange }: { w: SlidesWanted; onChange: () => void }) {
+  const { busy, run } = useBusy(onChange)
+  const r = w.request
+  const thanks = `Thanks: someone can make ${requestTitle(r)} now.`
+  const pick = async () => {
+    const files = await api.app.pickFiles({ kind: 'course' })
+    if (files.length) await run('pick', () => api.market.addRequestFiles({ id: r.id, files }), thanks)
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface px-4 py-2.5">
+      <div className="min-w-[12rem] flex-1">
+        <span className="font-medium">{r.label}</span> <span className="text-muted">· {r.course}</span>
+        <div className="text-[0.84rem] text-muted">{r.votes === 1 ? 'Someone wants it' : `${r.votes} people want it`}</div>
+      </div>
+      <SlideButtons files={w.files} onPick={() => void pick()} onShare={() => void run('share', () => api.market.shareSlides({ weekId: w.weekId!, requestId: r.id }), thanks)} busy={busy} />
+    </div>
   )
 }

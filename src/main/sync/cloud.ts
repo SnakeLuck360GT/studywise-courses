@@ -13,7 +13,7 @@ import { hostname } from 'node:os'
 import { getDb } from '../db'
 import * as repo from '../db/repo'
 import { marketAuth } from '../services/market'
-import { deliverRequested } from '../services/marketTasks'
+import { deliverRequested, missingWeeks } from '../services/marketTasks'
 import { SyncClient, SyncError } from './client'
 import { CLOUD_PEER, deviceId, ensureBackfill, getPeer, removePeer, syncWithCloud, type SqlDb } from './engine'
 import { localizeCoursePaths } from './files'
@@ -150,6 +150,8 @@ async function doSync(): Promise<CloudStatus> {
     void deliverRequested()
       .then((n) => n && onReceived(n))
       .catch((e) => console.warn('Adding requested weeks failed:', (e as Error).message))
+    // Your courses' missing weeks asked for (at most every half hour).
+    void missingWeeks({ background: true }).catch((e) => console.warn('Asking for missing weeks failed:', (e as Error).message))
   } catch (e) {
     lastError =
       e instanceof SyncError && e.status === 401

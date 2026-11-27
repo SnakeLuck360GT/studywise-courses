@@ -9,7 +9,7 @@ import { canMergeNow } from '../lib/courseFlows'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
 import { MarketSetup } from '../components/MarketSetup'
-import { FinishButton, RequestsView, WeekStrip } from '../components/MarketRequests'
+import { FinishButton, MissingWeeksPanel, RequestsView, WeekStrip } from '../components/MarketRequests'
 import { Button, Card, Empty, Input, Menu, MenuItem, Pill, Segmented, Spinner, cx } from '../components/ui'
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -26,7 +26,7 @@ function BackToCourses() {
 }
 
 /** Courses other people have generated, and the weeks in each. */
-export function Market({ courseId, tab }: { courseId?: string; tab?: 'requests' }) {
+export function Market({ courseId }: { courseId?: string }) {
   const [ready, setReady] = useState<boolean | null>(null)
   const check = () =>
     void api.market
@@ -44,12 +44,14 @@ export function Market({ courseId, tab }: { courseId?: string; tab?: 'requests' 
         </div>
       </Shell>
     )
-  return courseId ? <MarketCoursePage id={courseId} /> : <MarketList tab={tab} />
+  return courseId ? <MarketCoursePage id={courseId} /> : <MarketList />
 }
 
-function MarketList({ tab }: { tab?: 'requests' }) {
+function MarketList() {
   const go = useStore((s) => s.go)
-  const [view, setView] = useState<'all' | 'requests' | 'mine'>(tab ?? 'all')
+  const [view, setView] = useState<'all' | 'mine'>('all')
+  // Bumped when the missing weeks panel has loaded (it may have just asked for some), so the wanted list shows them.
+  const [wanted, setWanted] = useState(0)
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<MarketSort>('recent')
   const [courses, setCourses] = useState<MarketCourse[] | null>(null)
@@ -85,7 +87,6 @@ function MarketList({ tab }: { tab?: 'requests' }) {
               onChange={setView}
               options={[
                 { value: 'all', label: 'All courses' },
-                { value: 'requests', label: 'Requests' },
                 { value: 'mine', label: 'Published by you' }
               ]}
             />
@@ -96,10 +97,19 @@ function MarketList({ tab }: { tab?: 'requests' }) {
       </PageTitle>
       {view === 'mine' ? (
         <MyWeeks />
-      ) : view === 'requests' ? (
-        <RequestsView />
       ) : (
         <>
+          {/* Your missing weeks, tasks and what people are asking for come first; searching shows just the courses. */}
+          {!q && (
+            <div className="mb-10 flex flex-col gap-8">
+              <MissingWeeksPanel onLoaded={() => setWanted((n) => n + 1)} />
+              <section>
+                <h2 className="mb-3 text-[1.15rem] font-semibold">Wanted weeks</h2>
+                <RequestsView key={wanted} compact />
+              </section>
+            </div>
+          )}
+          {!q && <h2 className="mb-3 text-[1.15rem] font-semibold">Courses</h2>}
           <div className="mb-5 flex flex-wrap items-center gap-3">
             <div className="relative min-w-[16rem] flex-1">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
