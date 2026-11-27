@@ -316,6 +316,16 @@ export interface TopicVersion {
   progress: TopicProgress
 }
 
+/** Failures are warned about for a day; after that the warning goes (the topic or week can still be written or planned again). */
+export const ERROR_SHOWN_MS = 24 * 60 * 60 * 1000
+
+/** A failure recent enough to warn about. One with no time recorded is old. */
+export function showError(x: { error: string | null; error_at?: string | null }, now = Date.now()): boolean {
+  if (!x.error) return false
+  const at = x.error_at ? Date.parse(x.error_at) : NaN
+  return Number.isFinite(at) && now - at < ERROR_SHOWN_MS
+}
+
 export interface Topic {
   id: string
   course_id: string
@@ -325,6 +335,10 @@ export interface Topic {
   plan: OutlineTopic
   status: TopicStatus
   error: string | null
+  /** When it failed (warnings show for a day, see showError). */
+  error_at: string | null
+  /** The level of detail that failed to write, when known. */
+  error_level: NoteLevel | null
   content: TopicContent | null
   progress: TopicProgress
   card_count: number
@@ -355,6 +369,8 @@ export interface Week {
   label: string
   status: WeekStatus
   error: string | null
+  /** When planning failed (warnings show for a day, see showError). */
+  error_at: string | null
   /** This week's recall-card deck, in the course's folder. */
   deck_id: string | null
   /** Recall turned off: its cards stay, but don't come up in recall, course review or due counts. */

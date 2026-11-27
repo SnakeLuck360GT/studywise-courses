@@ -36,7 +36,8 @@ import {
   Merge,
   BookOpen
 } from 'lucide-react'
-import { NOTE_LEVEL_INFO, NOTE_LEVELS, READING_WEEK, WEEK_TEST_INFO, asReadingWeek, isReadingWeek, notReadingWeek, unreviewedSections, weekNumber, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
+import { NOTE_LEVEL_INFO, NOTE_LEVELS, READING_WEEK, showError, WEEK_TEST_INFO, asReadingWeek, isReadingWeek, notReadingWeek, unreviewedSections, weekNumber, type CourseFile, type CourseFull, type NoteLevel, type Topic, type WeekFull } from '@shared/course'
+import { estimateText, guessNote, topicSections, useUsageRate } from '../lib/usageEstimate'
 import { mergeWeekWith, offerPlan, switchLevel, switchWeekLevel, writeQuickReview, writeTopics, writeWeekTest } from '../lib/courseFlows'
 import { planUsageText, type JobInfo } from '@shared/types'
 import { shareWeek } from '../lib/weekShare'
@@ -98,6 +99,8 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
   const jobs = useStore((s) => s.jobs)
   const planJob = runningJob(jobs, 'course_outline', 'weekId', w.id)
   const planning = w.status === 'planning' || !!planJob
+  // Planning failed in the last day: warned about. Older, it's just a week to plan again.
+  const planFailed = w.status === 'error' && showError(w)
   // Adding new notes to the week (Claude works what's new into its topics).
   const notesJob = runningJob(jobs, 'course_update', 'weekId', w.id)
   const [addingNotes, setAddingNotes] = useState(false)
@@ -148,6 +151,10 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
     }
   }
   const minutes = w.topics.reduce((n, t) => n + (t.plan.minutes || 0), 0)
+  // Roughly what writing the rest will take of the 5-hour limit.
+  const rate = useUsageRate()
+  const unwrittenSections = unwritten.reduce((n, t) => n + topicSections(t), 0)
+  const writeEstimate = estimateText(unwrittenSections, rate)
 
   // Pick the level(s) of detail first; every level written is kept.
   const write = async (topics: Topic[]) => {
@@ -216,7 +223,7 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
                 <Play className="size-4" /> {nextUp.progress.section > 0 || nextUp.progress.step ? 'Continue' : 'Start'} {nextUp.content?.title ?? nextUp.plan.title}
               </Button>
             )}
-            {!planning && w.files.length > 0 && !w.topics.length && w.status !== 'error' && (
+            {!planning && w.files.length > 0 && !w.topics.length && !planFailed && (
               <Button variant="primary" onClick={plan}>
                 <Sparkles className="size-4" /> Plan topics
               </Button>
@@ -321,6 +328,11 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
       >
         <span>
           {w.topics.length ? `${w.topics.length} topic${w.topics.length === 1 ? '' : 's'} · about ${Math.round(minutes / 5) * 5 || minutes} minutes · ${done} done` : 'No topics yet'}
+          {writeEstimate && !planning && (
+            <span title={`${unwrittenSections} section${unwrittenSections === 1 ? '' : 's'} to write${guessNote(rate)}`}>
+              {' '}· writing the {unwritten.length === w.topics.length ? 'topics' : `${unwritten.length} left`} ≈ {writeEstimate.replace(/^about /, '')}
+            </span>
+          )}
           {` · ${w.files.length} file${w.files.length === 1 ? '' : 's'} · ${w.card_count} flashcard${w.card_count === 1 ? '' : 's'}`}
         </span>
         {newSections > 0 && (
@@ -390,7 +402,7 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
               </div>
             </div>
           )}
-          {w.status === 'error' && !planning && (
+          {planFailed && !planning && (
             <div className="flex flex-wrap items-center gap-3 rounded-xl border border-bad/40 bg-bad-soft px-5 py-4">
               <AlertTriangle className="size-5 text-bad" />
               <div className="min-w-0 flex-1 text-[0.92rem]">
@@ -424,7 +436,7 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
               </Button>
             </div>
           )}
-          {!planning && !w.topics.length && w.status !== 'error' && reading && !w.files.length ? (
+          {!planning && !w.topics.length && !planFailed && reading && !w.files.length ? (
             <div className="flex items-start gap-3 rounded-xl border border-good/30 bg-good-soft px-5 py-4">
               <BookOpen className="mt-0.5 size-5 shrink-0 text-good" />
               <div className="text-[0.92rem]">
@@ -435,7 +447,7 @@ function WeekView({ course: c, week: w, prev, next, reload }: { course: CourseFu
           ) : (
             !planning &&
             !w.topics.length &&
-            w.status !== 'error' && (
+            !planFailed && (
               <p className="rounded-xl border border-dashed border-line px-5 py-6 text-center text-[0.92rem] text-muted">
                 {w.files.length ? 'Plan this week to split its files into topics you learn in short sections.' : 'Add this week’s files, then plan its topics.'}
               </p>
@@ -635,6 +647,9 @@ function TopicRow({ t, write, saveNote, reload, onTrim }: { t: Topic; write: (to
   // The last write of this topic since the app started, for its share of the 5-hour limit.
   const lastWrite = jobs.find((j) => j.kind === 'course_topic' && j.status === 'done' && j.meta?.topicId === t.id)
   const used = planUsageText(lastWrite?.planUsage, true)
+  // Not written yet: roughly what writing it will take, from what sections have taken before.
+  const rate = useUsageRate()
+  const estimate = estimateText(topicSections(t), rate, true)
   const writing = t.status === 'writing' || !!job
   const ready = t.status === 'ready' && !!t.content
   const [open, setOpen] = useState(ready)
@@ -660,12 +675,17 @@ function TopicRow({ t, write, saveNote, reload, onTrim }: { t: Topic; write: (to
               <Sparkles className="size-3.5" /> Writing…
             </div>
           )}
-          {t.error && !writing && <div className="mt-1 text-[0.85rem] text-bad">{t.status === 'ready' ? `Last write didn’t finish: ${t.error}` : t.error}</div>}
+          {t.error && !writing && showError(t) && <div className="mt-1 text-[0.85rem] text-bad">{t.status === 'ready' ? `Last write didn’t finish: ${t.error}` : t.error}</div>}
         </button>
         <div className="ml-auto flex shrink-0 items-center gap-2 text-[0.85rem] text-muted">
           {t.plan.minutes > 0 && (
             <span className="hidden items-center gap-1 sm:flex">
               <Clock className="size-3.5" /> {t.plan.minutes} min
+            </span>
+          )}
+          {!job && !ready && !writing && estimate && (
+            <span className="hidden text-[0.8rem] sm:inline" title={`Writing its ${topicSections(t)} section${topicSections(t) === 1 ? '' : 's'} should use ${estimateText(topicSections(t), rate)}${guessNote(rate)}`}>
+              ≈ {estimate.replace(/^about /, '')}
             </span>
           )}
           {!job && lastWrite?.planUsage?.measuring && <span className="text-[0.8rem]">Measuring usage…</span>}

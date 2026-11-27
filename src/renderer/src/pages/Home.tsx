@@ -8,6 +8,7 @@ import { STUDY_TIME_EVENT, fmtDuration } from '../lib/studyTime'
 import { Shell } from '../components/Shell'
 import { Button, Kbd, cx } from '../components/ui'
 import { ResumeCard, useResumable } from '../components/ResumeCard'
+import { TaskBanner } from '../components/MarketRequests'
 
 type DeckRow = Deck & { card_count: number; due_count: number }
 type Overview = { activity: { date: string; count: number }[]; streak: number; today: number; week: number; next: (Card & { deck_name: string }) | null }
@@ -57,6 +58,8 @@ export function Home() {
 
   return (
     <Shell className="max-w-[1000px]">
+      {/* A week the marketplace has handed you to make today (Marketplace → Requests). */}
+      <TaskBanner />
       {resumable && resume && <ResumeCard r={resumable} onContinue={resume} onDismiss={dismissResumable} enterKey />}
       <section className="grid items-center gap-10 pt-2 pb-12 md:grid-cols-[1.1fr_1fr]">
         <div>

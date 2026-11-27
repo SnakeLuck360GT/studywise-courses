@@ -80,7 +80,7 @@ export async function test(): Promise<{ user: string }> {
   return { user: r.user.name }
 }
 
-class MarketError extends Error {
+export class MarketError extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -91,7 +91,7 @@ class MarketError extends Error {
   }
 }
 
-async function send(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+export async function send(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
   const url = marketUrl()
   const key = getSecret(KEY_SETTING)
   if (!url) throw new MarketError('Add the marketplace’s address in Settings → Marketplace first.', 0)
@@ -112,11 +112,11 @@ async function send(path: string, init: RequestInit & { timeoutMs?: number } = {
   throw new MarketError(body?.error || `The marketplace answered ${res.status}.`, res.status, body)
 }
 
-async function request<T>(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
+export async function request<T>(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
   return (await (await send(path, init)).json()) as T
 }
 
-const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+export const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
 
 export async function listCourses(input: { q?: string; sort?: MarketSort } = {}): Promise<MarketCourse[]> {
   const qs = new URLSearchParams()
@@ -444,6 +444,16 @@ export async function mergeRemote(remoteIds: string[], ctx: JobContext): Promise
   ctx.meta({ marketMerged: r.week.id })
   ctx.progress(`Merged ${ids.length} copies into one week, by ${(r.week.authors ?? [r.week.author]).join(', ')}`)
   return { week: r.week }
+}
+
+/**
+ * Your writing goes into someone else's published week (a week they asked to
+ * have finished): your copy is merged into theirs on the marketplace, credited
+ * to both of you, so everyone who added it gets the update.
+ */
+export async function contributeTo(remoteWeekId: string, weekId: string, ctx?: JobContext): Promise<MarketWeek> {
+  const { bytes } = await weekZip(weekId)
+  return (await mergeInto([remoteWeekId], [bytes], ctx)).week
 }
 
 /** Download a published week to a temporary .studyweek file, to import like a shared week. */

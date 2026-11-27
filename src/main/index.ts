@@ -16,6 +16,7 @@ import { configureCloud, startCloudSync, stopCloudSync } from './sync/cloud'
 import { buildMenu } from './menu'
 import { loadWindowState, trackWindowState } from './windowState'
 import { onJobEvent, runningJobCount, setUsageProbe } from './jobs'
+import { startUsageLearning } from './services/usageEstimate'
 import { activeProvider } from './ai/models'
 import { isMock } from './ai'
 import { startUpdateChecks, buildId } from './updater'
@@ -351,6 +352,7 @@ app.whenReady().then(async () => {
   updateBadge()
   startUpdateChecks((status) => broadcast({ type: 'update', status }))
   // Jobs measure how much of the 5-hour limit they used (Claude only).
+  startUsageLearning()
   setUsageProbe({
     enabled: () => activeProvider() === 'claude' && !isMock(),
     onReading: (fn) => onUsage((u) => u.fiveHour && fn(u.fiveHour.utilization)),

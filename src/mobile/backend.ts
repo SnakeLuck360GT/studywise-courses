@@ -191,6 +191,8 @@ const AI_CHANNELS = new Set([
   'courses.mergeWeeks',
   'courses.mergeCourses',
   'market.merge',
+  // Doing a task plans and writes a week.
+  'market.startTask',
   'learn.feedback',
   'explain.run',
   'explain.chat',

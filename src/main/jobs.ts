@@ -133,6 +133,14 @@ export function startJob<T>(kind: JobInfo['kind'], title: string, run: (ctx: Job
   return publicInfo(job)
 }
 
+type MeasuredListener = (job: JobInfo) => void
+const measured = new Set<MeasuredListener>()
+/** Called once a job's share of the 5-hour limit is known (planUsage.used set), e.g. to learn what writing costs. */
+export function onJobMeasured(l: MeasuredListener): () => void {
+  measured.add(l)
+  return () => measured.delete(l)
+}
+
 async function measureUsage(job: JobInfo): Promise<void> {
   const pu = job.planUsage!
   if (pu.before !== null && probe) {
@@ -142,6 +150,7 @@ async function measureUsage(job: JobInfo): Promise<void> {
   }
   pu.measuring = false
   emit({ type: 'update', job: publicInfo(job) })
+  if (pu.used !== null) for (const l of measured) l(publicInfo(job))
 }
 
 export function cancelJob(id: string): void {

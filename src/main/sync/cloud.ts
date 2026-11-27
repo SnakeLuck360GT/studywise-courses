@@ -13,6 +13,7 @@ import { hostname } from 'node:os'
 import { getDb } from '../db'
 import * as repo from '../db/repo'
 import { marketAuth } from '../services/market'
+import { deliverRequested } from '../services/marketTasks'
 import { SyncClient, SyncError } from './client'
 import { CLOUD_PEER, deviceId, ensureBackfill, getPeer, removePeer, syncWithCloud, type SqlDb } from './engine'
 import { localizeCoursePaths } from './files'
@@ -145,6 +146,10 @@ async function doSync(): Promise<CloudStatus> {
       filesLeft = await copyFiles(c)
       filesDue = filesLeft > 0
     }
+    // Weeks you asked for on the marketplace that someone has made since: added here (at most every few minutes).
+    void deliverRequested()
+      .then((n) => n && onReceived(n))
+      .catch((e) => console.warn('Adding requested weeks failed:', (e as Error).message))
   } catch (e) {
     lastError =
       e instanceof SyncError && e.status === 401

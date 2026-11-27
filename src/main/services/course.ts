@@ -100,7 +100,7 @@ const WHOLE_PDF_PAGES = 40
 
 type CourseRow = Course & { note_folder_id?: string | null }
 type RawCourseRow = Omit<CourseRow, 'private' | 'focus'> & { private: number; focus?: string | null }
-type WeekRow = Omit<Week, 'recall_off' | 'private' | 'test'> & { outline: string | null; recall_off: number; private: number; planned_with?: string | null; test?: string | null }
+type WeekRow = Omit<Week, 'recall_off' | 'private' | 'test' | 'error_at'> & { error_at?: string | null; outline: string | null; recall_off: number; private: number; planned_with?: string | null; test?: string | null }
 type TopicRow = {
   id: string
   course_id: string
@@ -110,6 +110,8 @@ type TopicRow = {
   plan: string
   status: string
   error: string | null
+  error_at?: string | null
+  error_level?: string | null
   content: string | null
   progress: string
   updated_at: string
@@ -152,6 +154,8 @@ const toTopic = (r: TopicRow, counts: Map<string, number>): Topic => ({
   plan: json(r.plan, {} as OutlineTopic),
   status: r.status as Topic['status'],
   error: r.error,
+  error_at: r.error_at ?? null,
+  error_level: isNoteLevel(r.error_level ?? '') ? (r.error_level as NoteLevel) : null,
   content: json<TopicContent | null>(r.content, null),
   progress: { ...emptyProgress(), ...json<Partial<TopicProgress>>(r.progress, {}) },
   card_count: counts.get(r.id) ?? 0,
@@ -161,7 +165,7 @@ const toTopic = (r: TopicRow, counts: Map<string, number>): Topic => ({
   updated_at: r.updated_at
 })
 
-const toWeek = ({ outline: _o, recall_off, private: p, planned_with: _p, test, ...w }: WeekRow): Week => ({ ...w, recall_off: !!recall_off, private: !!p, test: json<WeekTest | null>(test ?? null, null) })
+const toWeek = ({ outline: _o, recall_off, private: p, planned_with: _p, test, error_at, ...w }: WeekRow): Week => ({ ...w, error_at: error_at ?? null, recall_off: !!recall_off, private: !!p, test: json<WeekTest | null>(test ?? null, null) })
 const toCourseRow = (r: RawCourseRow): CourseRow => ({ ...r, private: !!r.private, focus: json<string[]>(r.focus ?? null, []).filter(isCourseFocus) })
 
 function courseRow(id: string): CourseRow {
@@ -263,7 +267,9 @@ function touchCourse(id: string): void {
   getDb().prepare('UPDATE courses SET updated_at = ? WHERE id = ?').run(now(), id)
 }
 
-function setWeek(id: string, patch: { status?: string; error?: string | null; outline?: string | null; label?: string; planned_with?: string | null; test?: string | null }): void {
+function setWeek(id: string, input: { status?: string; error?: string | null; outline?: string | null; label?: string; planned_with?: string | null; test?: string | null }): void {
+  // Setting or clearing an error stamps when (warnings show for a day).
+  const patch: Record<string, unknown> = 'error' in input ? { ...input, error_at: input.error ? now() : null } : input
   const sets = Object.keys(patch).map((k) => `${k} = @${k}`)
   if (sets.length) getDb().prepare(`UPDATE weeks SET ${sets.join(', ')} WHERE id = @id`).run({ ...patch, id })
 }
@@ -274,7 +280,12 @@ function topicRow(id: string): TopicRow {
   return r
 }
 
-function setTopic(id: string, patch: { status?: string; error?: string | null; content?: string | null; progress?: string; level?: NoteLevel; versions?: string; written_with?: string; plan?: string }): void {
+function setTopic(
+  id: string,
+  input: { status?: string; error?: string | null; error_level?: NoteLevel | null; content?: string | null; progress?: string; level?: NoteLevel; versions?: string; written_with?: string; plan?: string }
+): void {
+  // Setting or clearing an error stamps when, and which level failed (none unless given).
+  const patch: Record<string, unknown> = 'error' in input ? { error_level: null, ...input, error_at: input.error ? now() : null } : input
   const sets = Object.keys(patch).map((k) => `${k} = @${k}`)
   getDb().prepare(`UPDATE topics SET ${[...sets, 'updated_at = @updated_at'].join(', ')} WHERE id = @id`).run({ ...patch, updated_at: now(), id })
 }
@@ -283,8 +294,8 @@ function setTopic(id: string, patch: { status?: string; error?: string | null; c
 export function recoverInterrupted(): void {
   const d = getDb()
   // A topic that already had notes keeps them; the write that was cut short is just reported.
-  d.prepare("UPDATE topics SET status = CASE WHEN content IS NULL THEN 'error' ELSE 'ready' END, error = 'Interrupted. Write it again.' WHERE status = 'writing'").run()
-  d.prepare("UPDATE weeks SET status = 'error', error = 'Planning was interrupted. Plan it again.' WHERE status = 'planning'").run()
+  d.prepare("UPDATE topics SET status = CASE WHEN content IS NULL THEN 'error' ELSE 'ready' END, error = 'Interrupted. Write it again.', error_at = ? WHERE status = 'writing'").run(now())
+  d.prepare("UPDATE weeks SET status = 'error', error = 'Planning was interrupted. Plan it again.', error_at = ? WHERE status = 'planning'").run(now())
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +843,64 @@ export async function mergeWeeks(
   }
   touchCourse(target.course_id)
   return { weekId: targetId, merged, added, cards, files }
+}
+
+/**
+ * Fill in topics that failed to write from another copy of the week (one
+ * from the marketplace, just imported into the same course as `fromWeekId`):
+ * each wanted topic takes only the level that failed, from the copy's
+ * matching topic. Nothing you have is changed; the rest of the copy (other
+ * topics, other levels, files no filled level shows) is thrown away, and so
+ * is the copy. Returns the ids of the topics filled.
+ */
+export async function fillTopicsFrom(weekId: string, fromWeekId: string, wants: { topicId: string; level: NoteLevel }[]): Promise<string[]> {
+  const d = getDb()
+  const from = weekRow(fromWeekId)
+  const mine = wants.map((w) => ({ ...w, row: topicRow(w.topicId) }))
+  const theirs = d.prepare('SELECT * FROM topics WHERE week_id = ? ORDER BY position').all(fromWeekId) as TopicRow[]
+  const matches = matchTopics(
+    mine.map((m) => mergeTopicOf(m.row)),
+    theirs.map(mergeTopicOf)
+  )
+  const keep = new Map<string, string>() // their topic id → your topic it fills
+  theirs.forEach((t, j) => {
+    const i = matches.get(j)
+    if (i === undefined) return
+    const level = mine[i].level
+    const v = rowVersions(t)
+    // Only that level: shown, or put aside.
+    const content = rowLevel(t) === level && t.content ? t.content : v[level] ? JSON.stringify(v[level]!.content) : null
+    if (!content) return
+    d.prepare("UPDATE topics SET content = ?, level = ?, versions = '{}', progress = '{}', status = 'ready', error = NULL WHERE id = ?").run(content, level, t.id)
+    keep.set(t.id, mine[i].topicId)
+  })
+  // Everything else of the copy goes: its other topics with their recall cards, and files no kept topic shows.
+  const gone = theirs.filter((t) => !keep.has(t.id))
+  if (from.deck_id && gone.length) {
+    const cards = d
+      .prepare(`SELECT id FROM cards WHERE deck_id = ? AND json_extract(source, '$.type') = 'topic' AND json_extract(source, '$.ref') IN (${gone.map(() => '?').join(',')})`)
+      .all(from.deck_id, ...gone.map((t) => t.id)) as { id: string }[]
+    if (cards.length) repo.deleteCards(cards.map((c) => c.id))
+  }
+  for (const t of gone) {
+    d.prepare('DELETE FROM topics WHERE id = ?').run(t.id)
+    if (t.note_id) repo.deleteNote(t.note_id)
+  }
+  if (!keep.size) {
+    deleteWeek(fromWeekId)
+    return []
+  }
+  const shown = new Set<string>()
+  for (const id of keep.keys()) for (const s of json<TopicContent | null>(topicRow(id).content, null)?.sections ?? []) if (s.figure) shown.add(s.figure.fileId)
+  for (const f of listFiles(from.course_id).filter((f) => f.week_id === fromWeekId && !shown.has(f.id))) {
+    d.prepare('DELETE FROM course_files WHERE id = ?').run(f.id)
+    if (ownedFile(f.path)) rmSync(f.path, { force: true })
+  }
+  // Only those topics: not the copy's end-of-week test.
+  d.prepare('UPDATE weeks SET test = NULL WHERE id = ?').run(fromWeekId)
+  // The filled level joins each topic (no AI: your topic has no notes at that level, so nothing overlaps).
+  await mergeWeeks(weekId, [fromWeekId])
+  return [...new Set(keep.values())]
 }
 
 /**
@@ -1898,13 +1967,17 @@ export async function writeTopic(topicId: string, ctx: JobContext, instructions 
   const want = NOTE_LEVELS.filter((l) => pick.includes(l))
   const live = ctx.live
   let out = { topicId, sections: 0, cards: 0 }
+  let sections = 0
   for (const [i, level] of want.entries()) {
     // Each level gets its share of the progress bar.
     const scaled: typeof live = live && ((u) => live(u.percent == null ? u : { ...u, percent: (i + u.percent) / want.length }))
     const show = i === 0 && !(keepShown && first.content && level !== first.level)
     const r = await writeTopicLevel(topicId, { ...ctx, live: scaled }, instructions, level, show, want.length > 1)
     if (i === 0) out = r
+    sections += r.sections
   }
+  // What writing took is measured per section (usageEstimate), to estimate the next ones.
+  ctx.meta({ sectionsWritten: sections })
   return out
 }
 
@@ -2000,7 +2073,8 @@ async function writeTopicLevel(topicId: string, ctx: JobContext, instructions: s
   } catch (e) {
     // A topic with notes already keeps them (and stays usable); the error is still shown.
     const has = !!topicRow(topicId).content
-    setTopic(topicId, { status: has ? 'ready' : 'error', error: ctx.signal.aborted ? 'Cancelled' : (e as Error).message })
+    // Which level failed: the marketplace can fill it in later (marketFill).
+    setTopic(topicId, { status: has ? 'ready' : 'error', error: ctx.signal.aborted ? 'Cancelled' : (e as Error).message, error_level: level })
     throw e
   } finally {
     rmSync(work, { recursive: true, force: true })

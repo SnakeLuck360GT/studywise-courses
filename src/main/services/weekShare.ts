@@ -275,8 +275,9 @@ export async function importWeek(
   let week: { id: string; position: number }
   if (into) {
     week = { id: String(into.id), position: Number(into.position) }
-    // An empty week takes the shared week's state; one with its own topics keeps its own.
-    if (into.status === 'empty' && json.week.status === 'ready') d.prepare("UPDATE weeks SET status = 'ready', error = NULL, outline = COALESCE(outline, ?) WHERE id = ?").run(json.week.outline ?? null, week.id)
+    // An empty week (or one whose planning failed, so it has no topics) takes the shared week's state; one with its own topics keeps its own.
+    const blank = into.status === 'empty' || (into.status === 'error' && !d.prepare('SELECT 1 FROM topics WHERE week_id = ?').get(week.id))
+    if (blank && json.week.status === 'ready') d.prepare("UPDATE weeks SET status = 'ready', error = NULL, error_at = NULL, outline = COALESCE(outline, ?) WHERE id = ?").run(json.week.outline ?? null, week.id)
     // Its end-of-week test comes too, unless the week has its own.
     const test = testWithoutScores(json.week.test)
     if (test) d.prepare('UPDATE weeks SET test = COALESCE(test, ?) WHERE id = ?').run(test, week.id)

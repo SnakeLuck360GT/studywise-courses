@@ -5,7 +5,7 @@ import { duplicateWeekGroups } from '@shared/weekMerge'
 import { importSharedWeek } from '../lib/weekShare'
 import { declinedMarketWeek, marketMatches, offerMarketWeek, publishAllToMarket, setCourseVisibility } from '../lib/market'
 import { TrimCardsModal } from '../components/TrimCards'
-import { READING_WEEK, asReadingWeek, examPhase, isReadingWeek, missingReadingWeek, nextWeekLabel, revisionMaxGapDays, sortWeeks, weekNumber, type CourseFocus, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
+import { READING_WEEK, asReadingWeek, showError, examPhase, isReadingWeek, missingReadingWeek, nextWeekLabel, revisionMaxGapDays, sortWeeks, weekNumber, type CourseFocus, type CourseFull, type WeekFull, type WeekOrder } from '@shared/course'
 import { CourseFocusPicker, focusText } from '../components/CourseFocus'
 import { useStore, toast } from '../lib/store'
 import { api, errorText } from '../lib/api'
@@ -35,6 +35,21 @@ export function CoursePage({ id }: { id: string }) {
       .then(setC)
       .catch((e) => setError(errorText(e)))
   useEffect(() => void load(), [id, version])
+  // Topics that failed to write (ran out of limit, say) or a week whose planning failed: filled from the marketplace when someone has published them.
+  useEffect(() => {
+    let live = true
+    void api.market
+      .fillFailed({ courseId: id })
+      .then((r) => {
+        if (!live || !r.weeks) return
+        toast(`Filled in from the marketplace, so nothing needs writing again: ${r.filled.join(', ')}.`, 'good')
+        useStore.getState().bump()
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [id])
   const made = useMadeWeeks(c)
   const [order, setOrder] = useWeekOrder()
 
@@ -461,7 +476,7 @@ function WeekRow({ c, w, made }: { c: CourseFull; w: WeekFull; made: boolean }) 
   const reading = isReadingWeek(w.label)
   const status = planning
     ? { text: 'Planning…', tone: 'accent' as const }
-    : w.status === 'error'
+    : w.status === 'error' && showError(w)
       ? { text: 'Planning failed', tone: 'bad' as const }
       : writing
         ? { text: `Writing ${writing}…`, tone: 'accent' as const }

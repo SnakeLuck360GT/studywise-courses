@@ -299,6 +299,13 @@ export const MIGRATIONS: string[] = [
   `,
   /* 16: a course says what kind it is (theory, practical/coding, formula/method heavy: a JSON list), and every prompt for it tailors to that */ `
   ALTER TABLE courses ADD COLUMN focus TEXT NOT NULL DEFAULT '[]';
+  `,
+  /* 17: when writing or planning failed, and which level of detail a topic failed at: warnings go after a day, and the marketplace can fill in what's missing */ `
+  ALTER TABLE topics ADD COLUMN error_at TEXT;
+  ALTER TABLE topics ADD COLUMN error_level TEXT;
+  ALTER TABLE weeks ADD COLUMN error_at TEXT;
+  UPDATE topics SET error_at = updated_at WHERE error IS NOT NULL;
+  UPDATE weeks SET error_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE error IS NOT NULL;
   `
 ]
 

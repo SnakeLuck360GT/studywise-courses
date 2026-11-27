@@ -6,7 +6,7 @@
 // returns.
 
 import type { ModelChoice } from './types'
-import { weekNumber } from './course'
+import { READING_WEEK, weekNumber } from './course'
 
 /** A model and effort, and how many topics (or levels of a topic) were written with it. */
 export interface MarketModel {
@@ -253,4 +253,94 @@ export function sameCourse(a: { name: string; module?: string }, b: { name: stri
   const cb = moduleCode(b.module || b.name) ?? moduleCode(b.name)
   if (ca && cb) return ca === cb
   return bareName(a.name) === bareName(b.name)
+}
+
+// ---------------------------------------------------------------------------
+// Requests and tasks: asking for weeks nobody has made yet, and donating your
+// AI usage to make them (studywise-server's lib/requests.js).
+
+/** Modules are 12 weeks long, with week 6 a reading week (nothing to make). */
+export const WEEKS_PER_MODULE = 12
+export { READING_WEEK }
+export const TEACHING_WEEKS = Array.from({ length: WEEKS_PER_MODULE }, (_, i) => i + 1).filter((n) => n !== READING_WEEK)
+
+/**
+ * A week someone asked for. "week": a week of a course that isn't on the
+ * marketplace yet, made from slides people upload (or a week they planned in
+ * Studywise but haven't written). "write": the unwritten topics of a week
+ * that's on the marketplace.
+ */
+export interface WeekRequest {
+  id: string
+  kind: 'week' | 'write'
+  /** The marketplace course, once there is one. */
+  courseId: string | null
+  course: string
+  module: string
+  level: string
+  number: number | null
+  label: string
+  /** open: still wanted. done: on the marketplace (for "write", fully written). gone: the week to finish was taken down. */
+  status: 'open' | 'done' | 'gone'
+  /** "write": the week to finish. "week": the week made for it, once done. */
+  weekId: string | null
+  /** Who made it (for a merged week, everyone whose work is in it). */
+  doneBy: string[]
+  /** "write": who published the week being finished. */
+  weekAuthor: string | null
+  votes: number
+  voted: boolean
+  mine: boolean
+  createdBy: string
+  createdAt: string
+  files: { id: string; name: string; size: number; by: string; mine: boolean }[]
+  /** A week planned in Studywise (no topics written), to write from instead of planning again. */
+  plan: { size: number; by: string; topics: number; at: string } | null
+  /** It has something to make it from, so it can be handed out as a task. */
+  ready: boolean
+  /** What's left to write, when it's known (a "write" request, or one with a plan). */
+  toWrite: { topics: number; sections: number } | null
+  /** Someone has it as their task right now. */
+  inProgress: boolean
+  /** That someone is you. */
+  yours: boolean
+  canRemove: boolean
+}
+
+/** Today's task: one request handed to you to make with your own AI. One a day at most. */
+export interface MarketTask {
+  id: string
+  /** beaten: someone else made it first. expired: not started in time, so it went back. */
+  status: 'assigned' | 'started' | 'done' | 'skipped' | 'expired' | 'beaten' | 'gone'
+  day: string
+  startedAt: string | null
+  request: WeekRequest | null
+}
+
+/** Settings: requests you asked for or voted for that were added to your library already: {requestId: "weekId|when"}. */
+export const REQUESTS_DELIVERED_SETTING = 'market.requestsDelivered'
+
+/** "Week 4 of COMP23311", "the rest of Week 2 of Optics 301". */
+export function requestTitle(r: Pick<WeekRequest, 'kind' | 'label' | 'course'>): string {
+  return r.kind === 'write' ? `the rest of ${r.label} of ${r.course}` : `${r.label} of ${r.course}`
+}
+
+// ---------------------------------------------------------------------------
+// How much of your Claude plan's 5-hour limit writing takes, worked out from
+// what writing topics has used before (see usageEstimate in the main process).
+
+export interface UsageRate {
+  /** Share of the 5-hour limit one section takes to write (0.01 = 1%). */
+  perSection: number
+  /** From your own topics (true), or a rough starting guess until a few are measured. */
+  measured: boolean
+  /** How many sections a week usually has in your library, for a week nobody has planned yet. */
+  typicalWeekSections: number
+}
+
+/** "about 6%", "under 1%", "about 1.4 times" a whole 5-hour limit. */
+export function usageText(share: number): string {
+  if (share >= 1) return `about ${(Math.round(share * 10) / 10).toString()}× your 5-hour limit`
+  const pct = Math.round(share * 100)
+  return pct < 1 ? 'under 1% of your 5-hour limit' : `about ${pct}% of your 5-hour limit`
 }

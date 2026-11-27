@@ -24,6 +24,9 @@ import * as weekShare from './services/weekShare'
 import * as market from './services/market'
 import * as voice from './services/voice'
 import { assertCanMerge } from './services/contentCombine'
+import * as marketTasks from './services/marketTasks'
+import * as marketFill from './services/marketFill'
+import * as usageEstimate from './services/usageEstimate'
 import { CARD_CUTS, COURSE_FOCUSES, CourseQuestion, NOTE_LEVELS, WEEK_TEST_LEVELS } from '@shared/course'
 import * as io from './importexport'
 import { backupLibrary, restoreLibrary } from './backup'
@@ -658,7 +661,38 @@ export const handlers = {
       if (!n) throw new Error('You already have every one of those weeks.')
       const title = plans.length === 1 ? `Download ${plans[0].name}` : `Download ${n} weeks`
       return startJob('other', title, (ctx) => market.addPlanned(plans, ctx, i.levels))
-    })
+    }),
+
+    // Requests for weeks nobody has made, and tasks: donating your AI usage to make them (services/marketTasks).
+    requests: h(z.object({ courseId: z.string().optional() }).optional(), (i) => marketTasks.listRequests(i?.courseId)),
+    /** Ask for a week (or vote for it, if someone already asked). */
+    ask: h(
+      z.object({ courseId: z.string().optional(), course: z.object({ name: z.string().min(1).max(200), module: z.string().max(200).optional(), level: z.string().max(200).optional() }).optional(), number: z.number().int() }),
+      (i) => marketTasks.askForWeek(i)
+    ),
+    /** Ask for the rest of a published week to be written. */
+    askFinish: h(z.object({ weekId: id }), (i) => marketTasks.askToFinish(i.weekId)),
+    /** Your weeks someone else could make or finish for you. */
+    askable: h(none, () => marketTasks.askableWeeks()),
+    /** Ask for help with one of your own weeks: its plan, files or published topics go up with the request. */
+    askMine: h(z.object({ weekId: id }), (i) => marketTasks.askForMyWeek(i.weekId)),
+    vote: h(z.object({ id, on: z.boolean() }), (i) => marketTasks.vote(i.id, i.on)),
+    removeRequest: h(z.object({ id }), (i) => marketTasks.removeRequest(i.id)),
+    /** Upload slides for a requested week (picked with app.pickFiles). */
+    addRequestFiles: h(z.object({ id, files: z.array(z.string()).min(1).max(60) }), (i) => marketTasks.addRequestFiles(i.id, i.files)),
+    removeRequestFile: h(z.object({ id, fileId: id }), (i) => marketTasks.removeRequestFile(i.id, i.fileId)),
+    /** Today's task (one a day at most), and whether you get tasks. */
+    task: h(none, () => marketTasks.todayTask()),
+    skipTask: h(z.object({ id }), (i) => marketTasks.skipTask(i.id)),
+    setTasks: h(z.object({ on: z.boolean() }), (i) => marketTasks.setTasksOn(i.on)),
+    /** Make today's task with your AI and publish it (a job). */
+    startTask: h(z.object({ id, title: z.string().max(300) }), (i) => startJob('other', `Task: ${i.title}`, (ctx) => marketTasks.runTask(i.id, ctx))),
+    /** Add the weeks you asked for that are done now (it also runs after each cloud sync). */
+    deliver: h(none, () => marketTasks.deliverRequested({ force: true })),
+    /** Topics that failed to write (any level), or weeks whose planning failed: filled from someone's published copy, when there is one. Run when a course opens. */
+    fillFailed: h(z.object({ courseId: id }), (i) => marketFill.fillFailed(i.courseId)),
+    /** What writing a section takes of your 5-hour limit (null without one: Ollama). */
+    usageRate: h(none, () => usageEstimate.usageRate())
   },
   stats: {
     /** Time studied, topics and card stats for the home page. */

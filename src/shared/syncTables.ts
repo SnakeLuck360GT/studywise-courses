@@ -48,7 +48,9 @@ export const SYNCED_SETTINGS: Record<string, 'map' | 'list'> = {
   'market.published': 'map',
   'market.publishedHash': 'map',
   'market.courseLinks': 'map',
-  'market.importedWeeks': 'list'
+  'market.importedWeeks': 'list',
+  // Requested weeks already added, so another device doesn't add them again (the week itself syncs).
+  'market.requestsDelivered': 'map'
 }
 
 export const KEY_SEP = '\x1f'

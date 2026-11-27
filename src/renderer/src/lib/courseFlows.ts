@@ -5,6 +5,7 @@ import { askPlan, askWeekTest, askWrite, chooseDialog, confirmDialog } from './d
 import { toast, useStore } from './store'
 import { askAboutMatches } from '../components/MarketMatches'
 import { useMarketWeekHere } from './market'
+import { estimateText, guessNote, topicSections, usageRate } from './usageEstimate'
 
 const files = (n: number) => `${n} file${n === 1 ? '' : 's'}`
 
@@ -59,8 +60,13 @@ export async function writeTopics(topics: Topic[], opts: { title?: string; level
   if (!topics.length) return false
   const one = topics.length === 1 ? topics[0] : null
   const name = one ? (one.content?.title ?? one.plan.title) : `${topics.length} topics`
+  // Roughly what it'll take of the 5-hour limit (per level written).
+  const rate = await usageRate(useStore.getState().version)
+  const sections = topics.reduce((n, t) => n + topicSections(t), 0)
+  const estimate = estimateText(sections, rate)
+  const cost = estimate ? `Writing ${sections} section${sections === 1 ? '' : 's'} should use ${estimate} for each level of detail${guessNote(rate)}.` : ''
   const r = await askWrite(opts.title ?? `Write ${name}`, {
-    message: one?.levels.length ? `Already written as ${levelList(one.levels)}. Every level you write is kept, and you can switch between them.` : undefined,
+    message: [one?.levels.length ? `Already written as ${levelList(one.levels)}. Every level you write is kept, and you can switch between them.` : '', cost].filter(Boolean).join(' ') || undefined,
     levels: opts.levels,
     written: one?.levels ?? [],
     confirmText: 'Write'

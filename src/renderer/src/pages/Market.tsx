@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, FileText, Flag, ListPlus, Merge, RefreshCw, Search, Store, Trash2, Upload, Users } from 'lucide-react'
-import { authorsText, modelLabel, weeksByWeek, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketSort, type MarketWeek, type WeekGroup } from '@shared/market'
+import { authorsText, modelLabel, weeksByWeek, type MarketCopy, type MarketCourse, type MarketCourseFull, type MarketSort, type MarketWeek, type WeekGroup, type WeekRequest } from '@shared/market'
 import { NOTE_LEVELS, NOTE_LEVEL_INFO, isNoteLevel } from '@shared/course'
 import { api, errorText } from '../lib/api'
 import { addMarketWeek, copyText, downloadMarketCourse, downloadMyWeeks, isOutdated, levelCounts, marketCopies, modelsText, publishAllToMarket, updateMarketWeek, updateMarketWeeks, weekSummary } from '../lib/market'
@@ -9,6 +9,7 @@ import { canMergeNow } from '../lib/courseFlows'
 import { toast, useStore } from '../lib/store'
 import { Shell, PageTitle } from '../components/Shell'
 import { MarketSetup } from '../components/MarketSetup'
+import { FinishButton, RequestsView, WeekStrip } from '../components/MarketRequests'
 import { Button, Card, Empty, Input, Menu, MenuItem, Pill, Segmented, Spinner, cx } from '../components/ui'
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -25,7 +26,7 @@ function BackToCourses() {
 }
 
 /** Courses other people have generated, and the weeks in each. */
-export function Market({ courseId }: { courseId?: string }) {
+export function Market({ courseId, tab }: { courseId?: string; tab?: 'requests' }) {
   const [ready, setReady] = useState<boolean | null>(null)
   const check = () =>
     void api.market
@@ -43,12 +44,12 @@ export function Market({ courseId }: { courseId?: string }) {
         </div>
       </Shell>
     )
-  return courseId ? <MarketCoursePage id={courseId} /> : <MarketList />
+  return courseId ? <MarketCoursePage id={courseId} /> : <MarketList tab={tab} />
 }
 
-function MarketList() {
+function MarketList({ tab }: { tab?: 'requests' }) {
   const go = useStore((s) => s.go)
-  const [view, setView] = useState<'all' | 'mine'>('all')
+  const [view, setView] = useState<'all' | 'requests' | 'mine'>(tab ?? 'all')
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<MarketSort>('recent')
   const [courses, setCourses] = useState<MarketCourse[] | null>(null)
@@ -84,6 +85,7 @@ function MarketList() {
               onChange={setView}
               options={[
                 { value: 'all', label: 'All courses' },
+                { value: 'requests', label: 'Requests' },
                 { value: 'mine', label: 'Published by you' }
               ]}
             />
@@ -94,6 +96,8 @@ function MarketList() {
       </PageTitle>
       {view === 'mine' ? (
         <MyWeeks />
+      ) : view === 'requests' ? (
+        <RequestsView />
       ) : (
         <>
           <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -165,9 +169,17 @@ function MarketCoursePage({ id }: { id: string }) {
       .course({ id })
       .then(setC)
       .catch((e) => setError(errorText(e)))
+  // Requests to finish its weeks' unwritten topics, by week.
+  const [finish, setFinish] = useState<Record<string, WeekRequest>>({})
+  const loadFinish = () =>
+    void api.market
+      .requests({ courseId: id })
+      .then((rs) => setFinish(Object.fromEntries(rs.filter((r) => r.kind === 'write' && r.status === 'open' && r.weekId).map((r) => [r.weekId!, r]))))
+      .catch(() => setFinish({}))
   // Again when the library changes, e.g. after merging copies of a week.
   const version = useStore((s) => s.version)
   useEffect(() => void load(), [id, version])
+  useEffect(loadFinish, [id, version])
 
   const back = (
     <button className="inline-flex items-center gap-1 hover:text-ink" onClick={() => go({ name: 'market' })}>
@@ -201,12 +213,13 @@ function MarketCoursePage({ id }: { id: string }) {
         </span>
         <div className="mt-1.5 text-[0.88rem]">Written with {modelsText(c.models)}</div>
       </PageTitle>
+      <WeekStrip course={c} weeks={c.weeks} />
       <div className="flex flex-col gap-3">
         {weeksByWeek(c.weeks).map((g) =>
           g.versions.length === 1 ? (
-            <WeekRow key={g.versions[0].id} w={g.versions[0]} copy={copies.map[g.versions[0].id]} onAdded={copies.reload} onRemoved={load} />
+            <WeekRow key={g.versions[0].id} w={g.versions[0]} copy={copies.map[g.versions[0].id]} onAdded={copies.reload} onRemoved={load} finish={finish} onAsked={loadFinish} />
           ) : (
-            <WeekGroupRow key={g.key} g={g} copies={copies.map} onAdded={copies.reload} onRemoved={load} />
+            <WeekGroupRow key={g.key} g={g} copies={copies.map} onAdded={copies.reload} onRemoved={load} finish={finish} onAsked={loadFinish} />
           )
         )}
       </div>
@@ -218,7 +231,7 @@ function MarketCoursePage({ id }: { id: string }) {
  * Several people have generated the same week: one row for the week, with how
  * many people made it. Open it to see every version, each with its own Add.
  */
-function WeekGroupRow({ g, copies, onAdded, onRemoved }: { g: WeekGroup<MarketWeek>; copies: Record<string, MarketCopy>; onAdded: () => void; onRemoved: () => void }) {
+function WeekGroupRow({ g, copies, onAdded, onRemoved, finish, onAsked }: { g: WeekGroup<MarketWeek>; copies: Record<string, MarketCopy>; onAdded: () => void; onRemoved: () => void; finish?: Record<string, WeekRequest>; onAsked?: () => void }) {
   const [open, setOpen] = useState(false)
   const [merging, setMerging] = useState(false)
   const downloads = g.versions.reduce((n, v) => n + v.downloads, 0)
@@ -269,7 +282,7 @@ function WeekGroupRow({ g, copies, onAdded, onRemoved }: { g: WeekGroup<MarketWe
             </Button>
           </div>
           {g.versions.map((v) => (
-            <WeekRow key={v.id} w={v} copy={copies[v.id]} onAdded={onAdded} onRemoved={onRemoved} />
+            <WeekRow key={v.id} w={v} copy={copies[v.id]} onAdded={onAdded} onRemoved={onRemoved} finish={finish} onAsked={onAsked} />
           ))}
         </div>
       )}
@@ -348,7 +361,8 @@ function DownloadMenu({ course }: { course: MarketCourse }) {
   )
 }
 
-function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: MarketCopy; onAdded: () => void; onRemoved: () => void }) {
+/** finish: open requests to write the rest of a week, by week (a button to ask, or vote, shows on weeks with unwritten topics). */
+function WeekRow({ w, copy, onAdded, onRemoved, finish, onAsked }: { w: MarketWeek; copy?: MarketCopy; onAdded: () => void; onRemoved: () => void; finish?: Record<string, WeekRequest>; onAsked?: () => void }) {
   const go = useStore((s) => s.go)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -442,6 +456,7 @@ function WeekRow({ w, copy, onAdded, onRemoved }: { w: MarketWeek; copy?: Market
             </Pill>
           </button>
         )}
+        {finish && <FinishButton week={w} request={finish[w.id]} onChange={onAsked} />}
         {w.mine && (
           <Button variant="ghost" size="sm" onClick={remove}>
             <Trash2 className="size-4" /> Take down
