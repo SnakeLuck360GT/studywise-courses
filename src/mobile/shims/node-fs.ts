@@ -10,7 +10,8 @@ export const mkdirSync = () => undefined
 export const mkdtempSync = no('mkdtemp')
 export const rmSync = () => {}
 export const copyFileSync = no('copyFile')
+export const renameSync = no('rename')
 export const statSync = no('stat')
 export const readdirSync = () => []
 export const promises = {}
-export default { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, statSync, readdirSync, promises }
+export default { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, renameSync, statSync, readdirSync, promises }
